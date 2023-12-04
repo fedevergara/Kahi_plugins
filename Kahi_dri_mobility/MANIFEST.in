@@ -1,0 +1,2 @@
+recursive-include kahi_template/ *.py
+recursive-include kahi_template/ *.*
