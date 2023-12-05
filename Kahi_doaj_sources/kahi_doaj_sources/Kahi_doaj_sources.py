@@ -1,6 +1,5 @@
 from kahi.KahiBase import KahiBase
 from pymongo import MongoClient
-import datetime as dt
 from time import time
 
 
@@ -26,13 +25,11 @@ class Kahi_doaj_sources(KahiBase):
         self.doaj_collection = self.doaj_db[config["doaj_sources"]
                                             ["collection_name"]]
 
+        self.verbose = self.config["doaj_sources"]["verbose"]
+
         self.already_in_db = []
 
     def update_doaj(self, reg, entry):
-        """
-        TODO:
-        - Check if every field on entry could be updated
-        """
         for upd in entry["updated"]:
             if upd["source"] == "doaj":
                 return
@@ -96,104 +93,98 @@ class Kahi_doaj_sources(KahiBase):
         return entry
 
     def process_doaj(self, verbose=0):
-        with self.doaj_client.start_session() as session:
-            self.doaj_db = self.doaj_client[self.config["doaj_sources"]
-                                            ["database_name"]]
-            self.doaj_collection = self.doaj_db[self.config["doaj_sources"]
-                                                ["collection_name"]]
-            old = dt.datetime.now()
-            for oldreg in self.doaj_collection.find():
-                reg = oldreg["bibjson"]
-                if "eissn" in reg.keys():
-                    reg_db = self.collection.find_one(
-                        {"external_ids.id": reg["eissn"]})
-                    if reg_db:
-                        _id = reg_db["_id"]
-                        self.already_in_db.append(reg["eissn"])
-                        if verbose > 4:
-                            print("Already in db: " + reg["eissn"])
-                        if verbose > 0:
-                            print("Total already found: ",
-                                  len(self.already_in_db))
-                        entry = self.update_doaj(reg, reg_db)
-                        if entry:
-                            self.collection.update_one(
-                                {"_id": _id}, {"$set": entry})
-                        continue
-                if "pissn" in reg.keys():
-                    reg_db = self.collection.find_one(
-                        {"external_ids.id": reg["pissn"]})
-                    if reg_db:
-                        _id = reg_db["_id"]
-                        self.already_in_db.append(reg["pissn"])
-                        entry = self.update_doaj(reg, reg_db)
-                        if entry:
-                            self.collection.update_one(
-                                {"_id": _id}, {"$set": entry})
-                        continue
+        reg_list = list(self.doaj_collection.find())
+        for i, oldreg in enumerate(reg_list):
+            reg = oldreg["bibjson"]
+            if "eissn" in reg.keys():
+                reg_db = self.collection.find_one(
+                    {"external_ids.id": reg["eissn"]})
+                if reg_db:
+                    _id = reg_db["_id"]
+                    self.already_in_db.append(reg["eissn"])
+                    entry = self.update_doaj(reg, reg_db)
+                    if entry:
+                        self.collection.update_one(
+                            {"_id": _id}, {"$set": entry})
+                    continue
+            if "pissn" in reg.keys():
+                reg_db = self.collection.find_one(
+                    {"external_ids.id": reg["pissn"]})
+                if reg_db:
+                    _id = reg_db["_id"]
+                    self.already_in_db.append(reg["pissn"])
+                    entry = self.update_doaj(reg, reg_db)
+                    if entry:
+                        self.collection.update_one(
+                            {"_id": _id}, {"$set": entry})
+                    continue
 
-                entry = self.empty_source()
-                entry["updated"] = [{"source": "doaj", "time": int(time())}]
-                entry["names"] = [
-                    {"lang": "en", "name": reg["title"], "source": "doaj"}]
-                entry["keywords"] = reg["keywords"]
-                entry["languages"] = reg["language"]
-                entry["publisher"] = {"country_code": reg["publisher"]
-                                      ["country"], "name": reg["publisher"]["name"], "id": ""}
-                entry["open_access_start_year"] = reg["oa_start"] if "oa_start" in reg.keys(
-                ) else None
-                entry["external_urls"] = [
-                    {"source": ref, "url": url} for ref, url in reg["ref"].items()]
-                entry["review_process"] = reg["editorial"]["review_process"]
-                entry["plagiarism_detection"] = reg["plagiarism"]["detection"]
-                entry["publication_time_weeks"] = reg["publication_time_weeks"]
-                entry["copyright"] = reg["copyright"]
-                entry["licenses"] = reg["license"]
+            entry = self.empty_source()
+            entry["updated"] = [{"source": "doaj", "time": int(time())}]
+            entry["names"] = [
+                {"lang": "en", "name": reg["title"], "source": "doaj"}]
+            entry["keywords"] = reg["keywords"]
+            entry["languages"] = reg["language"]
+            entry["publisher"] = {"country_code": reg["publisher"]
+                                  ["country"], "name": reg["publisher"]["name"], "id": ""}
+            entry["open_access_start_year"] = reg["oa_start"] if "oa_start" in reg.keys(
+            ) else None
+            entry["external_urls"] = [
+                {"source": ref, "url": url} for ref, url in reg["ref"].items()]
+            entry["review_process"] = reg["editorial"]["review_process"]
+            entry["plagiarism_detection"] = reg["plagiarism"]["detection"]
+            entry["publication_time_weeks"] = reg["publication_time_weeks"]
+            entry["copyright"] = reg["copyright"]
+            entry["licenses"] = reg["license"]
 
-                if "apc" in reg.keys():
-                    if reg["apc"]["has_apc"]:
-                        entry["apc"] = {"charges": reg["apc"]["max"][-1]["price"],
-                                        "currency": reg["apc"]["max"][-1]["currency"]}
+            if "apc" in reg.keys():
+                if reg["apc"]["has_apc"]:
+                    entry["apc"] = {"charges": reg["apc"]["max"][-1]["price"],
+                                    "currency": reg["apc"]["max"][-1]["currency"]}
 
-                subjects_source = {}
-                if "subject" in reg.keys():
-                    if reg["subject"]:
-                        for sub in reg["subject"]:
-                            sub_entry = {
-                                "id": "",
-                                "name": sub["term"],
-                                "external_ids": [{"source": sub["scheme"], "id": sub["code"]}]
-                            }
-                            if sub["scheme"] in subjects_source.keys():
-                                subjects_source[sub["scheme"]].append(
-                                    sub_entry)
-                            else:
-                                subjects_source[sub["scheme"]] = [sub_entry]
-                for source, subs in subjects_source.items():
-                    entry["subjects"].append({
-                        "source": source,
-                        "subjects": subs
-                    })
+            subjects_source = {}
+            if "subject" in reg.keys():
+                if reg["subject"]:
+                    for sub in reg["subject"]:
+                        sub_entry = {
+                            "id": "",
+                            "name": sub["term"],
+                            "external_ids": [{"source": sub["scheme"], "id": sub["code"]}]
+                        }
+                        if sub["scheme"] in subjects_source.keys():
+                            subjects_source[sub["scheme"]].append(
+                                sub_entry)
+                        else:
+                            subjects_source[sub["scheme"]] = [sub_entry]
+            for source, subs in subjects_source.items():
+                entry["subjects"].append({
+                    "source": source,
+                    "subjects": subs
+                })
 
-                if "eissn" in reg.keys():
-                    entry["external_ids"].append(
-                        {"source": "eissn", "id": reg["eissn"]})
-                if "pissn" in reg.keys():
-                    entry["external_ids"].append(
-                        {"source": "pissn", "id": reg["pissn"]})
+            if "eissn" in reg.keys():
+                entry["external_ids"].append(
+                    {"source": "eissn", "id": reg["eissn"]})
+            if "pissn" in reg.keys():
+                entry["external_ids"].append(
+                    {"source": "pissn", "id": reg["pissn"]})
 
-                entry["waiver"] = reg["waiver"]
+            entry["waiver"] = reg["waiver"]
 
-                self.collection.insert_one(entry)
-                for ext in entry["external_ids"]:
-                    self.already_in_db.append(ext["id"])
+            self.collection.insert_one(entry)
+            if verbose > 4:
+                if i % 1000 == 0:
+                    print(
+                        f"""Processed  {i} of {len(reg_list)}""")
+            for ext in entry["external_ids"]:
+                self.already_in_db.append(ext["id"])
 
-                delta = dt.datetime.now() - old
-                if delta.seconds > 240:
-                    self.doaj_client.admin.command(
-                        'refreshSessions', [session.session_id], session=session)
-                    old = dt.datetime.now()
+        if verbose >= 4:
+            print(
+                f"""Inserted {self.collection.count_documents({"updated.source":"doaj"})} sources""")
+
+        self.client.close()
 
     def run(self):
-        self.process_doaj(verbose=5)
+        self.process_doaj(verbose=self.verbose)
         return 0

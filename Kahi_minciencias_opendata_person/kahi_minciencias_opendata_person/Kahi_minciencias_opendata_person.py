@@ -57,7 +57,7 @@ def process_one(url, db_name, empty_person, auid, cv, articulos, subset, verbose
     years = []
     for idx, reg in articulos.iterrows():
         years.append(int(reg["FCREACION_PD"].split("/")[-1]))
-    articulos["year"] = years
+    articulos.loc[:, "year"] = years
     articulos.sort_values("year", inplace=True)
 
     reg = subset.iloc[-1]

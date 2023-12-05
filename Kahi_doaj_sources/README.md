@@ -33,6 +33,7 @@ workflow:
     database_url: localhost:27017
     database_name: doaj
     collection_name: stage
+    verbose: 5
 ```
 
 
