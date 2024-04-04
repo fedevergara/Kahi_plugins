@@ -309,3 +309,33 @@ def top_words(collection, aff, authors_key):
     else:
         impactu_db[collection].insert_one(
             {"_id": aff, "top_words": results})
+
+    for aff in db["affiliations"].find({"types.type": {"$in": ["faculty", "department", "group"]}}):
+        aff_db = impactu_db["affiliations"].find_one({"_id": aff["_id"], "top_words": {"$exists": 1}})
+        if aff_db:
+            results = {}
+            for author in db["person"].find({"affiliations.id": aff["_id"]}):
+                for work in db["works"].find({"authors.id": author["_id"]}):
+                    title = work["titles"][0]["title"].lower()
+                    lang = work["titles"][0]["lang"]
+                    if lang == "es":
+                        model = es_model
+                    else:
+                        model = en_model
+                    title = model(title)
+                    for token in title:
+                        if token.lemma_.isnumeric():
+                            continue
+                        if token.lemma_ in stopwords:
+                            continue
+                        if len(token.lemma_) < 4:
+                            continue
+                        if token.lemma_ in results.keys():
+                            results[token.lemma_] += 1
+                        else:
+                            results[token.lemma_] = 1
+            topN = sorted(results.items(), key=lambda x: x[1], reverse=True)[:20]
+            results = []
+            for top in topN:
+                results.append({"name": top[0], "value": top[1]})
+            impactu_db["affiliations"].update_one({"_id": aff["_id"]}, {"$set": {"top_words": results}})
