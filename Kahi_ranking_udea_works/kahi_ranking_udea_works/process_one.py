@@ -2,6 +2,7 @@ from time import time
 from kahi_impactu_utils.Utils import doi_processor
 from kahi_ranking_udea_works.parser import parse_ranking_udea
 from bson import ObjectId
+from pandas import isna
 
 
 def process_one_update(ranking_udea_reg, colav_reg, collection, affiliation, empty_work):
@@ -109,10 +110,13 @@ def process_one_insert(ranking_udea_reg, db, collection, affiliation, empty_work
             if verbose > 4:
                 print("No source found for\n\t",
                       entry["source"]["external_ids"])
-        entry["source"] = {
-            "id": "",
-            "name": entry["source"]["name"]
-        }
+        if isna(entry["source"]["name"]):
+            entry["source"] = {}
+        else:
+            entry["source"] = {
+                "id": "",
+                "name": entry["source"]["name"]
+            }
 
     # search authors and affiliations in db
     for i, author in enumerate(entry["authors"]):
