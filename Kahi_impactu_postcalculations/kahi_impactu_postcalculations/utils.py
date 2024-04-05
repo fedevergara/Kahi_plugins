@@ -274,7 +274,7 @@ def network_creation(idx, collection_type, author_count):
         print(f"ERROR: too big network for id {idx}")
 
 
-def top_words():
+def top_words(step, aff, words_inserted_ids=[]):
     """
     Extract the top words for affiliations and authors.
     """
@@ -284,10 +284,10 @@ def top_words():
     global en_model
     global stopwords
 
-    for aff in db["affiliations"].find():
+    if step == '1':
         aff_db = impactu_db["affiliations"].find_one({"_id": aff["_id"], "top_words": {"$exists": 1}})
         if aff_db:
-            continue
+            return
         results = {}
         for work in db["works"].find({"authors.affiliations.id": aff["_id"], "titles.title": {"$exists": 1}}, {"titles": 1}):
             title = work["titles"][0]["title"].lower()
@@ -318,7 +318,7 @@ def top_words():
         else:
             impactu_db["affiliations"].insert_one({"_id": aff["_id"], "top_words": results})
 
-    for aff in db["affiliations"].find({"types.type": {"$in": ["faculty", "department", "group"]}}):
+    if step == '2':
         aff_db = impactu_db["affiliations"].find_one({"_id": aff["_id"], "top_words": {"$exists": 1}})
         if aff_db:
             results = {}
@@ -348,12 +348,11 @@ def top_words():
                 results.append({"name": top[0], "value": top[1]})
             impactu_db["affiliations"].update_one({"_id": aff["_id"]}, {"$set": {"top_words": results}})
 
-    words_inserted_ids = []
-    for aff in db["person"].find({"_id": {"$nin": words_inserted_ids}}, no_cursor_timeout=True):
+    if step == '3':
         aff_db = impactu_db["person"].find_one({"_id": aff["_id"], "top_words": {"$exists": 1}})
         if aff_db:
             words_inserted_ids.append(aff["_id"])
-            continue
+            return
         results = {}
         for work in db["works"].find({"authors.id": aff["_id"], "titles.title": {"$exists": 1}}, {"titles": 1}):
             title = work["titles"][0]["title"].lower()

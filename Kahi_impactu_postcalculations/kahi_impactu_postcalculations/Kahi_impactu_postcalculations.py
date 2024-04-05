@@ -15,6 +15,7 @@ class Kahi_impactu_postcalculations(KahiBase):
     """
 
     config = {}
+    words_inserted_ids = []
 
     def __init__(self, config):
         """
@@ -85,9 +86,9 @@ class Kahi_impactu_postcalculations(KahiBase):
 
         # Getting the list of authors ids
         authors_ids = [x["_id"] for x in db["person"].find({}, {"_id": 1})]
-        client.close()
 
         # Creating the networks of coauthorship for each affiliation
+
         if self.verbose > 1:
             print("INFO: Creating affiliations networks")
 
@@ -122,11 +123,41 @@ class Kahi_impactu_postcalculations(KahiBase):
                         self.author_count
                     ) for oaid in authors_ids)
 
-        # Getting the top words for institution and authors
+        # Getting the top words for institution - step 1
         if self.verbose > 1:
-            print("INFO: Creating top words for institutions and authors")
+            print("INFO: Creating top words for institutions - step 1")
         Parallel(
             n_jobs=self.n_jobs,
             verbose=10,
             backend="multiprocessing")(
-                delayed(top_words))
+                delayed(top_words)(
+                    '1',
+                    aff
+                ) for aff in db["affiliations"].find())
+
+        # Getting the top words for institution - step 2
+        if self.verbose > 1:
+            print("INFO: Creating top words for institutions - step 2")
+        Parallel(
+            n_jobs=self.n_jobs,
+            verbose=10,
+            backend="multiprocessing")(
+                delayed(top_words)(
+                    '2',
+                    aff
+                ) for aff in db["affiliations"].find({"types.type": {"$in": ["faculty", "department", "group"]}}))
+
+        # Getting the top words for authors
+        if self.verbose > 1:
+            print("INFO: Creating top words for authors")
+        Parallel(
+            n_jobs=self.n_jobs,
+            verbose=10,
+            backend="multiprocessing")(
+                delayed(top_words)(
+                    '3',
+                    author,
+                    self.words_inserted_ids
+                ) for author in db["person"].find({"_id": {"$nin": self.words_inserted_ids}}, no_cursor_timeout=True))
+
+        client.close()
