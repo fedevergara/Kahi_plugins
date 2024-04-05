@@ -68,11 +68,13 @@ class Kahi_impactu_postcalculations(KahiBase):
         client = MongoClient(self.mongodb_url)
         db = client[self.database_name]
 
-        print("INFO: Creating indexes")
+        if self.verbose > 1:
+            print("INFO: Creating indexes")
         db["works"].create_index("authors.id")
 
         # Getting the list of institutions ids with works
-        print("INFO: Getting authors and affiliations ids")
+        if self.verbose > 1:
+            print("INFO: Getting authors and affiliations ids")
         institutions_ids = []
 
         for aff in db["affiliations"].find({"types.type": {"$nin": ["faculty", "department", "group"]}}, {"_id": 1}):
@@ -80,11 +82,15 @@ class Kahi_impactu_postcalculations(KahiBase):
                 {"authors.affiliations.id": aff["_id"]})
             if count != 0:
                 institutions_ids.append(aff["_id"])
+
+        # Getting the list of authors ids
         authors_ids = [x["_id"] for x in db["person"].find({}, {"_id": 1})]
         client.close()
 
-        print("INFO: Creating affiliations networks")
         # Creating the networks of coauthorship for each affiliation
+        if self.verbose > 1:
+            print("INFO: Creating affiliations networks")
+
         if institutions_ids:
             Parallel(
                 n_jobs=self.n_jobs,
@@ -97,7 +103,9 @@ class Kahi_impactu_postcalculations(KahiBase):
                     ) for oaid in institutions_ids)
 
         # Getting the list of authors ids with works
-        print("INFO: Checking authors with works")
+        if self.verbose > 1:
+            print("INFO: Checking authors with works")
+
         authors_ids = Parallel(n_jobs=self.n_jobs, backend="multiprocessing", verbose=10)(
             delayed(count_works_one)(author) for author in authors_ids)
         authors_ids = [x for x in authors_ids if x is not None]
@@ -114,26 +122,11 @@ class Kahi_impactu_postcalculations(KahiBase):
                         self.author_count
                     ) for oaid in authors_ids)
 
-        # Getting the top words for each institution
-        print("INFO: Creating top words for institutions")
+        # Getting the top words for institution and authors
+        if self.verbose > 1:
+            print("INFO: Creating top words for institutions and authors")
         Parallel(
             n_jobs=self.n_jobs,
             verbose=10,
             backend="multiprocessing")(
-                delayed(top_words)(
-                    "affiliations",
-                    aff,
-                    "authors.affiliations.id"
-                ) for aff in institutions_ids)
-
-        # Getting the top words for each author
-        print("INFO: Creating top words for authors")
-        Parallel(
-            n_jobs=self.n_jobs,
-            verbose=10,
-            backend="multiprocessing")(
-                delayed(top_words)(
-                    "person",
-                    author,
-                    "authors.id"
-                ) for author in authors_ids)
+                delayed(top_words))

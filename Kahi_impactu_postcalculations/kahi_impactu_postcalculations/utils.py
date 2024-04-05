@@ -88,10 +88,13 @@ def network_creation(idx, collection_type, author_count):
         aff_info = db["affiliations"].find_one({"_id": idx})
         name = aff_info["names"][0]["name"]
         for n in aff_info["names"]:
-            if n["lang"] in ["es", "en"]:
+            if n["lang"] == "es":
                 name = n["name"]
                 break
+            elif n["lang"] == "en":
+                name = n["name"]
         authors_key = "authors.affiliations.id"
+
     elif collection_type == "person":
         aff_info = db["person"].find_one({"_id": idx})
         name = aff_info["full_name"]
@@ -156,16 +159,21 @@ def network_creation(idx, collection_type, author_count):
                     work_nodes.append(author["id"])
 
         # Connecting all the nodes in the work among them
+        # Checking if the connection already exists to add one to the count of coauthorships
         for node in work_nodes:
             if node not in nodes:
                 nodes.append(node)
-        for node_a, node_b in work_edges:
-            edge_found = (node_a, node_b) in edges or (
-                node_b, node_a) in edges
+        for nodea, nodeb in work_edges:
+            edge_found = False
+            if (nodea, nodeb) in edges:
+                edges_coauthorships[str(nodea) + str(nodeb)] += 1
+                edge_found = True
+            elif (nodeb, nodea) in edges:
+                edges_coauthorships[str(nodeb) + str(nodea)] += 1
+                edge_found = True
             if not edge_found:
-                edges_coauthorships[str(
-                    node_a) + str(node_b)] = edges_coauthorships.get(str(node_a) + str(node_b), 0) + 1
-                edges.append((node_a, node_b))
+                edges_coauthorships[str(nodea) + str(nodeb)] = 1
+                edges.append((nodea, nodeb))
 
     # Adding the connections between the coauthoring institutions
     for node in nodes:
@@ -215,23 +223,33 @@ def network_creation(idx, collection_type, author_count):
 
     # Constructing the actual format to insert in the database
     num_nodes = len(nodes)
-    nodes_db = [
-        {
-            "id": str(node),
-            "label": nodes_labels[nodes.index(node)],
-            "degree": len([(i, j) for i, j in edges if i == node or j == node]),
-            "size": 50 * log(1 + len([(i, j) for i, j in edges if i == node or j == node]) / (num_nodes - 1), 2) if num_nodes > 1 else 1
-        } for node in nodes]
-    edges_db = [
-        {
-            "source": str(node_a),
-            "sourceName": nodes_labels[nodes.index(node_a)],
-            "target": str(node_b),
-            "targetName": nodes_labels[nodes.index(node_b)],
-            "coauthorships": edges_coauthorships.get(str(node_a) + str(node_b), 0),
-            "size": edges_coauthorships.get(str(node_a) + str(node_b), 0)
-        } for node_a, node_b in edges
-    ]
+    nodes_db = []
+    for i, node in enumerate(nodes):
+        degree = len([1 for i, j in edges if i == node or j == node])
+        size = 50 * log(1 + degree / (num_nodes - 1), 2) if num_nodes > 1 else 1
+        nodes_db.append(
+            {
+                "id": str(node),
+                "label": nodes_labels[i],
+                "degree": degree,
+                "size": size
+            }
+        )
+    edges_db = []
+    for nodea, nodeb in edges:
+        coauthorships = 0
+        if str(nodea) + str(nodeb) in edges_coauthorships.keys():
+            coauthorships = edges_coauthorships[str(nodea) + str(nodeb)]
+        elif str(nodeb) + str(nodea) in edges_coauthorships.keys():
+            coauthorships = edges_coauthorships[str(nodeb) + str(nodea)]
+        edges_db.append({
+            "source": str(nodea),
+            "sourceName": nodes_labels[nodes.index(nodea)],
+            "target": str(nodeb),
+            "targetName": nodes_labels[nodes.index(nodeb)],
+            "coauthorships": coauthorships,
+            "size": coauthorships,
+        })
 
     top = max([e["coauthorships"] for e in edges_db]) if edges_db else 1
     bot = min([e["coauthorships"] for e in edges_db]) if edges_db else 1
@@ -256,66 +274,56 @@ def network_creation(idx, collection_type, author_count):
         print(f"ERROR: too big network for id {idx}")
 
 
-def top_words(collection, aff, authors_key):
+def top_words():
     """
-    Extract the top words for a given collection (affiliations or person).
-
-    Parameters:
-    ----------
-    collection : str
-        Type of the collection ("affiliations" or "person").
+    Extract the top words for affiliations and authors.
     """
     global db
     global impactu_db
-    global client
     global es_model
     global en_model
     global stopwords
 
-    aff_db = impactu_db[collection].find_one(
-        {"_id": aff, "top_words": {"$exists": 1}})
-    if aff_db:
-        if collection == "person":
-            return
-    results = {}
-
-    for work in db["works"].find({authors_key: aff, "titles.title": {"$exists": 1}}, {"titles": 1}):
-        title = work["titles"][0]["title"].lower()
-        lang = work["titles"][0]["lang"]
-
-        model = es_model if lang == "es" else en_model
-
-        title = model(title)
-
-        for token in title:
-            if token.lemma_.isnumeric():
-                continue
-            if token.lemma_ in stopwords:
-                continue
-            if len(token.lemma_) < 4:
-                continue
-            if token.lemma_ in results.keys():
-                results[token.lemma_] += 1
+    for aff in db["affiliations"].find():
+        aff_db = impactu_db["affiliations"].find_one({"_id": aff["_id"], "top_words": {"$exists": 1}})
+        if aff_db:
+            continue
+        results = {}
+        for work in db["works"].find({"authors.affiliations.id": aff["_id"], "titles.title": {"$exists": 1}}, {"titles": 1}):
+            title = work["titles"][0]["title"].lower()
+            lang = work["titles"][0]["lang"]
+            if lang == "es":
+                model = es_model
             else:
-                results[token.lemma_] = 1
-
-    topN = sorted(results.items(),
-                  key=lambda x: x[1], reverse=True)[:20]
-    results = [{"name": top[0], "value": top[1]} for top in topN]
-    aff_db = impactu_db[collection].find_one({"_id": aff})
-    if aff_db:
-        impactu_db[collection].update_one(
-            {"_id": aff}, {"$set": {"top_words": results}})
-    else:
-        impactu_db[collection].insert_one(
-            {"_id": aff, "top_words": results})
+                model = en_model
+            title = model(title)
+            for token in title:
+                if token.lemma_.isnumeric():
+                    continue
+                if token.lemma_ in stopwords:
+                    continue
+                if len(token.lemma_) < 4:
+                    continue
+                if token.lemma_ in results.keys():
+                    results[token.lemma_] += 1
+                else:
+                    results[token.lemma_] = 1
+        topN = sorted(results.items(), key=lambda x: x[1], reverse=True)[:20]
+        results = []
+        for top in topN:
+            results.append({"name": top[0], "value": top[1]})
+        aff_db = impactu_db["affiliations"].find_one({"_id": aff["_id"]})
+        if aff_db:
+            impactu_db["affiliations"].update_one({"_id": aff["_id"]}, {"$set": {"top_words": results}})
+        else:
+            impactu_db["affiliations"].insert_one({"_id": aff["_id"], "top_words": results})
 
     for aff in db["affiliations"].find({"types.type": {"$in": ["faculty", "department", "group"]}}):
         aff_db = impactu_db["affiliations"].find_one({"_id": aff["_id"], "top_words": {"$exists": 1}})
         if aff_db:
             results = {}
             for author in db["person"].find({"affiliations.id": aff["_id"]}):
-                for work in db["works"].find({"authors.id": author["_id"]}):
+                for work in db["works"].find({"authors.id": author["_id"], "titles.title": {"$exists": 1}}):
                     title = work["titles"][0]["title"].lower()
                     lang = work["titles"][0]["lang"]
                     if lang == "es":
@@ -339,3 +347,39 @@ def top_words(collection, aff, authors_key):
             for top in topN:
                 results.append({"name": top[0], "value": top[1]})
             impactu_db["affiliations"].update_one({"_id": aff["_id"]}, {"$set": {"top_words": results}})
+
+    words_inserted_ids = []
+    for aff in db["person"].find({"_id": {"$nin": words_inserted_ids}}, no_cursor_timeout=True):
+        aff_db = impactu_db["person"].find_one({"_id": aff["_id"], "top_words": {"$exists": 1}})
+        if aff_db:
+            words_inserted_ids.append(aff["_id"])
+            continue
+        results = {}
+        for work in db["works"].find({"authors.id": aff["_id"], "titles.title": {"$exists": 1}}, {"titles": 1}):
+            title = work["titles"][0]["title"].lower()
+            lang = work["titles"][0]["lang"]
+            if lang == "es":
+                model = es_model
+            else:
+                model = en_model
+            title = model(title)
+            for token in title:
+                if token.lemma_.isnumeric():
+                    continue
+                if token.lemma_ in stopwords:
+                    continue
+                if len(token.lemma_) < 4:
+                    continue
+                if token.lemma_ in results.keys():
+                    results[token.lemma_] += 1
+                else:
+                    results[token.lemma_] = 1
+        topN = sorted(results.items(), key=lambda x: x[1], reverse=True)[:20]
+        results = []
+        for top in topN:
+            results.append({"name": top[0], "value": top[1]})
+        aff_db = impactu_db["person"].find_one({"_id": aff["_id"]})
+        if aff_db:
+            impactu_db["person"].update_one({"_id": aff["_id"]}, {"$set": {"top_words": results}})
+        else:
+            impactu_db["person"].insert_one({"_id": aff["_id"], "top_words": results})
