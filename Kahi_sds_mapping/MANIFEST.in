@@ -1,0 +1,2 @@
+recursive-include kahi_sds_mapping/ *.py
+recursive-include kahi_sds_mapping/ *.*
