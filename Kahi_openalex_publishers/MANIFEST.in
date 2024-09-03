@@ -1,0 +1,2 @@
+recursive-include kahi_openalex_publishers/ *.py
+recursive-include kahi_openalex_publishers/ *.*
