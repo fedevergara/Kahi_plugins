@@ -4,78 +4,49 @@ from time import time
 from joblib import Parallel, delayed
 
 
-def process_one(oa_aff, collection, empty_affiliations, max_tries=10):
+def process_one(oa_aff, publishers_collection, affiliations_collection, subjects_collection, empty_affiliations, max_tries=10):
 
     db_reg = None
     for source, idx in oa_aff["ids"].items():
-        db_reg = collection.find_one({"external_ids.id": idx})
+        db_reg = publishers_collection.find_one({"external_ids.id": idx})
         if db_reg:
             break
     if db_reg:
         for upd in db_reg["updated"]:
             if upd["source"] == "openalex":
                 return  # Should it be update-able?
-        db_reg["updated"].append({"time": int(time()), "source": "openalex"})
-        id_sources = [ext["id"] for ext in db_reg["external_ids"]]
-        for source, idx in oa_aff["ids"].items():
-            if isinstance(idx, str):
-                if "http" in idx and "openalex" not in idx:
-                    continue
-            if idx not in id_sources:
-                db_reg["external_ids"].append({"source": source, "id": idx})
-        url_sources = [ext["url"] for ext in db_reg["external_urls"]]
-        for source, url in oa_aff["ids"].items():
-            if url not in url_sources:
-                db_reg["external_urls"].append({"source": source, "url": url})
+        # Update publisher with the data of other source
+        return
 
-        # addresses
-        if len(db_reg["addresses"]) == 0:
-            db_reg["addresses"] = [
-                {
-                    "lat": oa_aff["geo"]["latitude"],
-                    "lng": oa_aff["geo"]["longitude"],
-                    "state": oa_aff["geo"]["region"],
-                    "city": oa_aff["geo"]["city"],
-                    "city_id": oa_aff["geo"]["geo_names_city_id"],
-                    "country": oa_aff["geo"]["country"],
-                    "country_code": oa_aff["geo"]["country_code"]
-                }
-            ]
-
-        # names
-        langs = [name["lang"] for name in db_reg["names"]]
-        for lang, name in oa_aff["international"]["display_name"].items():
-            if lang not in langs:
-                langs.append(lang)
-                db_reg["names"].append(
-                    {"source": "openalex", "lang": lang, "name": name})
-        # types
-        types_source = [typ["source"] for typ in db_reg["types"]]
-        if "openalex" not in types_source:
-            db_reg["types"].append(
-                {"source": "openalex", "type": oa_aff["type"]})
-        # abbreviations
-        for abv in oa_aff["display_name_alternatives"]:
-            if abv not in db_reg["abbreviations"]:
-                db_reg["abbreviations"].append(abv)
-        collection.update_one(
-            {"_id": db_reg["_id"]},
-            {"$set": {
-                "updated": db_reg["updated"],
-                "external_ids": db_reg["external_ids"],
-                "external_urls": db_reg["external_urls"],
-                "addresses": db_reg["addresses"],
-                "names": db_reg["names"],
-                "types": db_reg["types"],
-                "abbreviations": db_reg["abbreviations"]
-            }}
-        )
     else:
         entry = empty_affiliations.copy()
         entry["updated"].append({"time": int(time()), "source": "openalex"})
         # names
-        entry["names"].append(
-            {"source": "openalex", "lang": "en", "name": oa_aff["display_name"]})
+        db_aff = None
+        if "roles" in oa_aff.keys() and oa_aff["roles"]:
+            entry["relations"] = [{"source": "openalex", "role": role["role"], "id": role["id"]}
+                                  for role in oa_aff["roles"] if "role" in role and "id" in role]
+            institution_id = next((role["id"] for role in entry["relations"] if role["role"] == "institution"), None)
+            if institution_id:
+                db_aff = affiliations_collection.find_one(
+                    {"external_ids.id": institution_id})
+        if db_aff:
+            entry["names"].append(db_aff["names"])
+        else:
+            entry["names"].append(
+                {"source": "openalex", "lang": "en", "name": oa_aff["display_name"]})
+        # linage
+        entry["lineage"] = [{"source": "openalex", "parent": False, "id": ling} for ling in oa_aff["lineage"]]
+        # parent_publisher
+        if "parent_publisher" in oa_aff.keys() and oa_aff["parent_publisher"]:
+            parent_publisher_id = oa_aff["parent_publisher"]["id"]
+            # Search for parent_publisher in lineage and set parent to True
+            for lineage in entry["lineage"]:
+                if lineage["id"] == parent_publisher_id:
+                    lineage["parent"] = True
+                    break  # Only one parent_publisher
+        # herarchy_level
+        entry["hierarchy_level"] = [{"source": "openalex", "level": oa_aff["hierarchy_level"]}]
         # external_ids
         for source, idx in oa_aff["ids"].items():
             if isinstance(idx, str):
@@ -91,24 +62,27 @@ def process_one(oa_aff, collection, empty_affiliations, max_tries=10):
         if oa_aff["image_url"]:
             entry["external_urls"].append(
                 {"source": "logo", "url": oa_aff["image_url"]})
+        # subjects
+        if "x_concepts" in oa_aff.keys() and oa_aff["x_concepts"]:
+            entry["subjects"].append(
+                {"source": "openalex", "subjects": []})
+            for sub in oa_aff["x_concepts"]:
+                entry["subjects"][0]["subjects"].append({"id": sub["id"], "name": sub["display_name"], "level": sub["level"]})
+            for sub in entry["subjects"][0]["subjects"]:
+                subject_db = subjects_collection.find_one({"external_ids.id": sub["id"]})
+                if subject_db:
+                    sub["id"] = subject_db["_id"]
         # types
-        entry["types"].append({"source": "openalex", "type": oa_aff["type"]})
+        if db_aff:
+            entry["types"].append(db_aff["types"])
         # abbreviations
-        for abv in oa_aff["display_name_alternatives"]:
-            entry["abbreviations"].append(abv)
+        if db_aff:
+            entry["abbreviations"].append(db_aff["abbreviations"])
         # addresses
-        entry["addresses"] = [
-            {
-                "lat": oa_aff["geo"]["latitude"],
-                "lng": oa_aff["geo"]["longitude"],
-                "state": oa_aff["geo"]["region"],
-                "city": oa_aff["geo"]["city"],
-                "city_id": oa_aff["geo"]["geonames_city_id"],
-                "country": oa_aff["geo"]["country"],
-                "country_code": oa_aff["geo"]["country_code"]
-            }
-        ]
-        collection.insert_one(entry)
+        if db_aff:
+            entry["addresses"].append(db_aff["addresses"])
+        # insert
+        publishers_collection.insert_one(entry)
 
 
 class Kahi_openalex_publishers(KahiBase):
@@ -138,12 +112,11 @@ class Kahi_openalex_publishers(KahiBase):
 
         self.openalex_db = self.openalex_client[config["openalex_publishers"]
                                                 ["database_name"]]
-        if config["openalex_publishers"]["collection_name"] not in self.openalex_db.list_collection_names():
+        if config["openalex_publishers"]["publishers_collection"] not in self.openalex_db.list_collection_names():
             raise Exception("Collection {} not found in {}".format(
-                config["openalex_publishers"]['collection_name'], config["openalex_publishers"]["database_url"]))
+                config["openalex_publishers"]['publishers_collection'], config["openalex_publishers"]["database_url"]))
 
-        self.openalex_collection = self.openalex_db[config["openalex_publishers"]
-                                                    ["collection_name"]]
+        self.publishers_collection = self.openalex_db[config["openalex_publishers"]["publishers_collection"]]
 
         self.n_jobs = config["openalex_publishers"]["num_jobs"] if "num_jobs" in config["openalex_publishers"].keys(
         ) else 1
@@ -153,12 +126,14 @@ class Kahi_openalex_publishers(KahiBase):
         self.client.close()
 
     def process_openalex(self):
-        publishers_cursor = self.openalex_collection.find(
+        publishers_cursor = self.publishers_collection.find(
             no_cursor_timeout=True)
 
         with MongoClient(self.mongodb_url) as client:
             db = client[self.config["database_name"]]
-            collection = db["publishers"]
+            publishers_collection = db["publishers"]
+            affiliations_collection = db["affiliations"]
+            subjects_collection = db["subjects"]
 
             Parallel(
                 n_jobs=self.n_jobs,
@@ -166,7 +141,9 @@ class Kahi_openalex_publishers(KahiBase):
                 backend="threading")(
                 delayed(process_one)(
                     aff,
-                    collection,
+                    publishers_collection,
+                    affiliations_collection,
+                    subjects_collection,
                     self.empty_affiliation()
                 ) for aff in publishers_cursor
             )

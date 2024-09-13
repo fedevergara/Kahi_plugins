@@ -32,7 +32,7 @@ workflow:
   openalex_publishers:
     database_url: localhost:27017
     database_name: openalex
-    collection_name: publishers
+    publishers_collection: publishers
     num_jobs: 20
     verbose: 2
 ```
