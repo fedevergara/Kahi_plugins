@@ -3,18 +3,18 @@ from pymongo import MongoClient, TEXT
 from time import time
 from joblib import Parallel, delayed
 from pandas import read_excel, isna
-from kahi_ranking_udea_works.process_one import process_one
+from kahi_ciarp_works.process_one import process_one
 from kahi_impactu_utils.Utils import doi_processor
 from mohan.Similarity import Similarity
 
 
-class Kahi_ranking_udea_works(KahiBase):
+class Kahi_ciarp_works(KahiBase):
 
     config = {}
 
     def __init__(self, config):
         """
-        Constructor for the Kahi_ranking_udea_works class.
+        Constructor for the Kahi_ciarp_works class.
 
         Several indices are created in the MongoDB collection to speed up the queries.
 
@@ -22,7 +22,7 @@ class Kahi_ranking_udea_works(KahiBase):
         ----------
         config : dict
             The configuration dictionary. It should contain the following keys:
-            - ranking_udea_works(/doi or empty): a dictionary with the following keys:
+            - ciarp_works(/doi or empty): a dictionary with the following keys:
                 - task: the task to be performed. It can be "doi" or "all"
                 - num_jobs: the number of jobs to be used in parallel processing
                 - verbose: the verbosity level
@@ -50,12 +50,12 @@ class Kahi_ranking_udea_works(KahiBase):
         self.collection.create_index("authors.id")
         self.collection.create_index([("titles.title", TEXT)])
 
-        if "es_index" in config["ranking_udea_works"].keys() and "es_url" in config["ranking_udea_works"].keys() and "es_user" in config["ranking_udea_works"].keys() and "es_password" in config["ranking_udea_works"].keys():  # noqa: E501
-            es_index = config["ranking_udea_works"]["es_index"]
-            es_url = config["ranking_udea_works"]["es_url"]
-            if config["ranking_udea_works"]["es_user"] and config["ranking_udea_works"]["es_password"]:
-                es_auth = (config["ranking_udea_works"]["es_user"],
-                           config["ranking_udea_works"]["es_password"])
+        if "es_index" in config["ciarp_works"].keys() and "es_url" in config["ciarp_works"].keys() and "es_user" in config["ciarp_works"].keys() and "es_password" in config["ciarp_works"].keys():  # noqa: E501
+            es_index = config["ciarp_works"]["es_index"]
+            es_url = config["ciarp_works"]["es_url"]
+            if config["ciarp_works"]["es_user"] and config["ciarp_works"]["es_password"]:
+                es_auth = (config["ciarp_works"]["es_user"],
+                           config["ciarp_works"]["es_password"])
             else:
                 es_auth = None
             self.es_handler = Similarity(
@@ -65,7 +65,7 @@ class Kahi_ranking_udea_works(KahiBase):
             self.es_handler = None
             print("WARNING: No elasticsearch configuration provided")
 
-        self.ranking = read_excel(config["ranking_udea_works"]["file_path"], dtype={
+        self.ranking = read_excel(config["ciarp_works"]["file_path"], dtype={
                                   "cedula": str, "DOI": str})
         # adding index column for external_ids
         index = []
@@ -75,10 +75,10 @@ class Kahi_ranking_udea_works(KahiBase):
         self.ranking['index'] = index
         self.ranking = self.ranking.to_dict(orient="records")
 
-        self.task = config["ranking_udea_works"]["task"]
-        self.n_jobs = config["ranking_udea_works"]["num_jobs"] if "num_jobs" in config["ranking_udea_works"].keys(
+        self.task = config["ciarp_works"]["task"]
+        self.n_jobs = config["ciarp_works"]["num_jobs"] if "num_jobs" in config["ciarp_works"].keys(
         ) else 1
-        self.verbose = config["ranking_udea_works"]["verbose"] if "verbose" in config["ranking_udea_works"].keys(
+        self.verbose = config["ciarp_works"]["verbose"] if "verbose" in config["ciarp_works"].keys(
         ) else 0
 
         self.udea_reg = self.db["affiliations"].find_one(
@@ -94,7 +94,7 @@ class Kahi_ranking_udea_works(KahiBase):
                 {"time": int(time()), "source": "manual"})
             udea_reg["names"] = [
                 {"name": 'Universidad de Antioquia',
-                    "lang": 'es', "source": "staff_udea"}
+                    "lang": 'es', "source": "ciarp"}
             ]
             udea_reg["abbreviations"] = ['UdeA']
             udea_reg["year_established"] = 1803
@@ -122,9 +122,9 @@ class Kahi_ranking_udea_works(KahiBase):
             self.udea_reg = self.db["affiliations"].find_one(
                 {"names.name": "Universidad de Antioquia"})
 
-    def process_ranking_udea(self):
+    def process_ciarp(self):
         """
-        Method to process the ranking database.
+        Method to process the CIARP database.
         Checks if the task is "doi" or not and processes the documents accordingly.
 
         Parameters:
@@ -184,8 +184,8 @@ class Kahi_ranking_udea_works(KahiBase):
 
     def run(self):
         """
-        Method to run the process_ranking_udea method.
-        Entrypoint for the Kahi_ranking_udea_works class to be excute by kahi.
+        Method to run the process_ciarp method.
+        Entrypoint for the Kahi_ciarp_works class to be excute by kahi.
         """
-        self.process_ranking_udea()
+        self.process_ciarp()
         return 0

@@ -82,6 +82,7 @@ def process_one_insert(ranking_udea_reg, db, collection, affiliation, empty_work
     entry = parse_ranking_udea(
         ranking_udea_reg, affiliation, empty_work.copy())
     # link
+    # print(entry["authors"])
     source_db = None
     if "external_ids" in entry["source"].keys():
         for ext in entry["source"]["external_ids"]:
@@ -242,6 +243,7 @@ def process_one_insert(ranking_udea_reg, db, collection, affiliation, empty_work
 
 
 def process_one(ranking_udea_reg, db, collection, affiliation, empty_work, similarity, es_handler, verbose=0):
+    print("Processing one")
     """
     Function to process a single register from the ranking database.
     This function is used to insert or update a register in the colav(kahi works) database.
@@ -321,6 +323,7 @@ def process_one(ranking_udea_reg, db, collection, affiliation, empty_work, simil
                             response["_id"]))
                         print(response)
             else:  # insert new register
+                print("Inserting new register")
                 process_one_insert(
                     ranking_udea_reg, db, collection, affiliation, empty_work, es_handler, verbose)
         else:

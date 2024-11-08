@@ -51,10 +51,10 @@ if os.name in ('nt', 'dos'):
 def main():
     setup(
         # Application name:
-        name="Kahi_ranking_udea_works",
+        name="Kahi_ciarp_works",
 
         # Version number (initial):
-        version=get_version('kahi_ranking_udea_works/_version.py'),
+        version=get_version('kahi_ciarp_works/_version.py'),
 
         # Application author details:
         author="Colav",
@@ -71,7 +71,7 @@ def main():
         #
         license="BSD",
 
-        description="Kahi plugin to insert and update works from Web of Science",
+        description="Kahi plugin to insert and update works from CIARP databases",
 
         long_description=open("README.md").read(),
 

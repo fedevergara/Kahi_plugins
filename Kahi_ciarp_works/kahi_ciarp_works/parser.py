@@ -59,12 +59,17 @@ def parse_ranking_udea(reg, affiliation, empty_work):
             aff["name"] = affname["name"]
         elif affname["source"] == "ror":
             aff["name"] = affname["name"]
-    entry["authors"].append({
+
+    author = {
         "external_ids": [{"provenance": "ranking", "source": "Cédula de Ciudadanía", "id": reg["cedula"]}],
         "full_name": name["full_name"],
         "types": [],
         "affiliations": [aff]
-    })
+    }
+    if not author in entry["authors"]:
+        entry["authors"].append(author)
+
+    print(len(entry["authors"]))
     entry["external_ids"].append(
         {"provenance": "ranking", "source": "ranking", "id": reg["index"]})
     return entry

@@ -1,2 +1,0 @@
-recursive-include kahi_ranking_udea_works/ *.py
-recursive-include kahi_ranking_udea_works/ *.*

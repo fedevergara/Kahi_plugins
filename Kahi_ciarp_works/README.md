@@ -1,6 +1,6 @@
 <center><img src="https://raw.githubusercontent.com/colav/colav.github.io/master/img/Logo.png"/></center>
 
-# Kahi ranking udea works plugin 
+# Kahi CIARP works plugin 
 Kahi will use this plugin to insert or update the works information from ranking office file from University of Antioquia.
 
 # Description
@@ -13,7 +13,7 @@ pip3 install .
 ```
 From the package you can install by running
 ```shell
-pip3 install Kahi_openalex_subjects
+pip3 install Kahi_ciarp_works
 ```
 # Similarity support
 To process works without doi, similarity is mandaroty. Then a elastic search server must be running. The plugin will use the server to find the most similar works in the database. To deply it please read https://github.com/colav/Chia/tree/main/elasticsaerch and follow the instructions.
@@ -22,7 +22,7 @@ Docker and docker-compose are required to deploy the server.
 
 if you only wants to process works with doi, you can skip this step and remove the es_index, es_url, es_user and es_password from the yaml file.
 
-**But it is mandatory to put `ranking_udea_works/doi` in the yaml file.**
+**But it is mandatory to put `ciarp_works/doi` in the yaml file.**
 
 
 # Usage
@@ -34,13 +34,13 @@ config:
   log_database: kahi
   log_collection: log
 workflow:
-  ranking_udea_works/doi:
+  ciarp_works/doi:
     es_index: kahi_es
     es_url: http://localhost:9200
     es_user: elastic
     es_password: colav
     file_path: udea/produccion 2018-2022 al 27 oct 2022.xlsx
-  ranking_udea_works:
+  ciarp_works:
     es_index: kahi_es
     es_url: http://localhost:9200
     es_user: elastic
