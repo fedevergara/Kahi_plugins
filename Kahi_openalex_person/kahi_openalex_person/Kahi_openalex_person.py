@@ -14,7 +14,7 @@ def process_one(oa_author, client, db_name, empty_person, related_works, max_tri
     entry["updated"].append({"source": "openalex", "time": int(time())})
 
     entry["full_name"] = sub(
-        r'\s+', ' ', oa_author["display_name"].replace(".", " ")).strip()
+        r'\s+', ' ', sub(r'[^A-Za-zÀ-ÿ ]+', ' ', oa_author["display_name"]).strip())
 
     for name in oa_author["display_name_alternatives"]:
         if not name.lower() in entry["aliases"]:
