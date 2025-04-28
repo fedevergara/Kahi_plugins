@@ -6,7 +6,26 @@ from kahi_impactu_utils.Utils import get_id_from_url, split_names
 from re import sub
 
 
-def process_one(oa_author, client, db_name, empty_person, related_works, max_tries=10):
+def process_one_insert(person_db, oa_author, client, db_name, empty_person, related_works):
+    """"
+    Insert a new OpenAlex author record into the database.
+
+    Parameters:
+    person_db (dict):
+        The existing OpenAlex author record in the database.
+    oa_author (dict):
+        The new OpenAlex author record to insert into the database.
+    client (MongoClient):
+        The MongoDB client to use for database operations.
+    db_name (str):
+        The name of the database to use.
+    empty_person (dict):
+        A template for an empty person document.
+    related_works (list):
+        A list of related works to associate with the person.
+    max_tries (int):
+        The maximum number of attempts to insert the record into the database.
+    """
     db = client[db_name]
     collection = db["person"]
 
@@ -86,6 +105,153 @@ def process_one(oa_author, client, db_name, empty_person, related_works, max_tri
                     entry["related_works"].append(rec)
                 break
     collection.insert_one(entry)
+
+
+def process_one_update(person_db, oa_author, client, db_name, empty_person, related_works):
+    """"
+    Update an existing OpenAlex author record in the database with new information.
+
+    Parameters:
+    person_db (dict):
+        The existing OpenAlex author record in the database.
+    oa_author (dict):
+        The new OpenAlex author record to update the existing record with.
+    client (MongoClient):
+        The MongoDB client to use for database operations.
+    db_name (str):
+        The name of the database to use.
+    empty_person (dict):
+        A template for an empty person document.
+    related_works (list):
+        A list of related works to associate with the person.
+    """
+    db = client[db_name]
+    collection = db["person"]
+
+    entry = empty_person.copy()
+    entry["updated"] = person_db.get("updated", [])
+    entry["updated"].append({
+        "source": "openalex",
+        "time": int(time())
+    })
+
+    # Iterate over OpenAlex IDs and add any that are not already in the document
+    new_external_ids = []
+    for source, url in oa_author.get("ids", {}).items():
+        idx = get_id_from_url(url)
+        if idx:
+            record = {"provenance": "openalex", "source": source, "id": idx}
+            if record not in person_db.get("external_ids", []):
+                new_external_ids.append(record)
+    entry["external_ids"] = person_db.get(
+        "external_ids", []) + new_external_ids
+
+    if "last_known_institutions" in oa_author.keys():
+        if oa_author["last_known_institutions"]:
+            for inst in oa_author["last_known_institutions"]:
+                aff_reg = None
+                aff_reg = db["affiliations"].find_one(
+                    {"external_ids.id": inst["id"]})
+                if not aff_reg:
+                    if "ror" in inst.keys():
+                        aff_reg = db["affiliations"].find_one(
+                            {"external_ids.id": inst["ror"]})
+                if aff_reg:
+                    name = aff_reg["names"][0]["name"]
+                    for n in aff_reg["names"]:
+                        if n["lang"] == "es":
+                            name = n["name"]
+                            break
+                        elif n["lang"] == "en":
+                            name = n["name"]
+                    entry["affiliations"].append({
+                        "id": aff_reg["_id"],
+                        "name": name,
+                        "types": aff_reg["types"],
+                        "start_date": -1,
+                        "end_date": -1
+                    })
+
+    elif "last_known_institution" in oa_author.keys():
+        if oa_author["last_known_institution"]:
+            aff_reg = None
+            for source, idx in oa_author["last_known_institution"].items():
+                aff_reg = db["affiliations"].find_one(
+                    {"external_ids.id": idx})
+                if aff_reg:
+                    break
+            if aff_reg:
+                name = aff_reg["names"][0]["name"]
+                for n in aff_reg["names"]:
+                    if n["lang"] == "es":
+                        name = n["name"]
+                        break
+                    elif n["lang"] == "en":
+                        name = n["name"]
+                entry["affiliations"].append({
+                    "id": aff_reg["_id"],
+                    "name": name,
+                    "types": aff_reg["types"],
+                    "start_date": -1,
+                    "end_date": -1
+                })
+
+    for rwork in related_works:
+        for key in rwork["ids"].keys():
+            if key == "doi":
+                rec = {"provenance": "openalex",
+                       "source": key, "id": rwork["ids"][key], "year": rwork["publication_year"], "institutions": rwork["authorships"]["institutions"]}
+                if rec not in entry["related_works"]:
+                    entry["related_works"].append(rec)
+                break
+
+    # Update the person document in the database
+    collection.update_one(
+        {"_id": person_db["_id"]},
+        {
+            "$addToSet": {
+                "updated": {"$each": entry["updated"]},
+                "external_ids": {"$each": entry["external_ids"]},
+                "affiliations": {"$each": entry.get("affiliations", [])},
+                "related_works": {"$each": entry.get("related_works", [])}
+            }
+        }
+    )
+
+
+def process_one(oa_author, client, db_name, empty_person, related_works):
+    """"
+    Process a single OpenAlex record to extract personal details and either update or insert the corresponding document
+    in the 'person' collection based on whether the record exists.
+
+    Parameters:
+    oa_author (dict):
+        The OpenAlex author record to process.
+    client (MongoClient):
+        The MongoDB client to use for database operations.
+    db_name (str):
+        The name of the database to use.
+    empty_person (dict):
+        A template for an empty person document.
+    related_works (list):
+        A list of related works to associate with the person.
+    """
+    db = client[db_name]
+    collection = db["person"]
+
+    person_db = None
+    for source, idx in oa_author["ids"].items():
+        idx = get_id_from_url(idx)
+        if idx:
+            person_db = collection.find_one({"external_ids.id": idx})
+            if person_db:
+                break
+    if person_db:
+        return process_one_update(
+            person_db, oa_author, client, db_name, empty_person, related_works)
+    else:
+        return process_one_insert(
+            person_db, oa_author, client, db_name, empty_person, related_works)
 
 
 class Kahi_openalex_person(KahiBase):
