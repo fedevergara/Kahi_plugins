@@ -86,6 +86,7 @@ def main():
             'pandas',
             'kahi_impactu_utils',
             'mohan',
+            'langcodes',
             'iso639~=0.1.4'
         ],
     )
