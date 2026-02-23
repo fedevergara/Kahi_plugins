@@ -200,15 +200,16 @@ class Kahi_scimago_sources(KahiBase):
                 "external_ids": []
             })
         found_scimago_subjects = False
-        scimago_subjetcs_index = -1
+        scimago_subjects_index = -1
         for sub in entry["subjects"]:
             if sub["source"] == "scimago":
                 found_scimago_subjects = True
+                scimago_subjects_index = entry["subjects"].index(sub)
                 break
         if found_scimago_subjects:
             for sub in scimago_subjects:
-                if sub not in entry["subjects"][scimago_subjetcs_index]["subjects"]:
-                    entry["subjects"][scimago_subjetcs_index]["subjects"].append(
+                if sub not in entry["subjects"][scimago_subjects_index]["subjects"]:
+                    entry["subjects"][scimago_subjects_index]["subjects"].append(
                         sub)
         else:
             entry["subjects"].append({
@@ -293,14 +294,14 @@ class Kahi_scimago_sources(KahiBase):
                     "from_date": 1640995199,
                     "rank": sjr["SJR Best Quartile"],
                     "order": int(sjr["Rank"]) if sjr["Rank"] else None,
-                    "source": "Scimago Best Quartile"
+                    "source": "scimago Best Quartile"
                 })
                 entry["ranking"].append({
                     "to_date": 1640995199,
                     "from_date": 1640995199,
                     "rank": int(sjr["H index"]),
                     "order": int(sjr["Rank"]) if sjr["Rank"] else None,
-                    "source": "Scimago hindex"
+                    "source": "scimago hindex"
                 })
                 if sjr.get("Open Access") and sjr.get("Open Access Diamond"):
                     entry["open_access"].append({
@@ -319,7 +320,7 @@ class Kahi_scimago_sources(KahiBase):
                         "from_date": 1640995199,
                         "rank": rank,
                         "order": int(sjr["Rank"]) if sjr["Rank"] else None,
-                        "source": "Scimago"
+                        "source": "scimago"
                     })
 
                 # Upsert category rankings
@@ -340,7 +341,7 @@ class Kahi_scimago_sources(KahiBase):
                         "external_ids": []
                     })
                 entry["subjects"].append({
-                    "source": "Scimago",
+                    "source": "scimago",
                     "subjects": scimago_subjects
                 })
                 self.collection.insert_one(entry)
