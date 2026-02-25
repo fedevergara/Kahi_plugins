@@ -107,7 +107,8 @@ class Kahi_publindex_sources(KahiBase):
                 found = True
                 break
         if not found:
-            entry["updated"].append({"source": source_name, "time": int(time())})
+            entry["updated"].append(
+                {"source": source_name, "time": int(time())})
 
     def _append_name(self, entry, name, lang, source):
         name = self._normalize_text(name)
@@ -134,9 +135,7 @@ class Kahi_publindex_sources(KahiBase):
 
         for rec in entry["ranking"]:
             if (
-                rec.get("source") == "publindex"
-                and rec.get("from_date") == from_date
-                and rec.get("to_date") == to_date
+                rec.get("source") == "publindex" and rec.get("from_date") == from_date and rec.get("to_date") == to_date
             ):
                 rec["rank"] = rank_value
                 rec["order"] = None
@@ -175,15 +174,15 @@ class Kahi_publindex_sources(KahiBase):
         specialty = self._normalize_text(reg.get("nme_especialidad"))
         area_code = self._normalize_text(reg.get("id_area_con"))
 
-        if gran_area:
+        if gran_area and gran_area.lower() != "no registra":
             subjects.append(
                 {"id": "", "name": gran_area, "level": "gran_area", "external_ids": []}
             )
-        if area:
+        if area and area.lower() != "no registra":
             subjects.append(
                 {"id": "", "name": area, "level": "area", "external_ids": []}
             )
-        if specialty:
+        if specialty and specialty.lower() != "no registra":
             subjects.append(
                 {
                     "id": "",
@@ -220,7 +219,8 @@ class Kahi_publindex_sources(KahiBase):
                 break
 
         if source_idx is None:
-            entry["subjects"].append({"source": "publindex", "subjects": subjects})
+            entry["subjects"].append(
+                {"source": "publindex", "subjects": subjects})
             return
 
         current = entry["subjects"][source_idx].get("subjects", [])
@@ -273,10 +273,12 @@ class Kahi_publindex_sources(KahiBase):
 
         publisher_name = self._normalize_text(reg.get("nme_inst_edit_1"))
         if publisher_name:
+            country = self._normalize_text(reg.get("pais_rev_in"))
+            country_code = "CO" if country and country.lower() == "colombia" else ""
             entry["publisher"] = {
-                "country_code": "",
+                "country_code": country_code,
                 "name": publisher_name,
-                "id": self._normalize_numeric_id(reg.get("id_inst_edit_1")),
+                "id": "",
             }
 
         self._merge_subjects(entry, self._build_subjects(reg))
@@ -299,20 +301,19 @@ class Kahi_publindex_sources(KahiBase):
 
         publisher_name = self._normalize_text(reg.get("nme_inst_edit_1"))
         if publisher_name:
-            publisher_id = self._normalize_numeric_id(reg.get("id_inst_edit_1"))
+            country = self._normalize_text(reg.get("pais_rev_in"))
+            country_code = "CO" if country and country.lower() == "colombia" else ""
             if not entry["publisher"]:
                 entry["publisher"] = {
-                    "country_code": "",
+                    "country_code": country_code,
                     "name": publisher_name,
-                    "id": publisher_id,
+                    "id": "",
                 }
             else:
                 if not entry["publisher"].get("name"):
                     entry["publisher"]["name"] = publisher_name
-                if publisher_id and not entry["publisher"].get("id"):
-                    entry["publisher"]["id"] = publisher_id
                 if "country_code" not in entry["publisher"]:
-                    entry["publisher"]["country_code"] = ""
+                    entry["publisher"]["country_code"] = country_code
 
         self._merge_subjects(entry, self._build_subjects(reg))
 
@@ -357,7 +358,8 @@ class Kahi_publindex_sources(KahiBase):
     def run(self):
         start_time = time()
         self.process_publindex()
-        print("Execution time: {} minutes".format(round((time() - start_time) / 60, 2)))
+        print("Execution time: {} minutes".format(
+            round((time() - start_time) / 60, 2)))
         self.client.close()
         self.publindex_client.close()
         return 0
