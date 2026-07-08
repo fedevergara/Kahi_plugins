@@ -1,4 +1,5 @@
 from copy import deepcopy
+from contextlib import ExitStack
 from concurrent.futures import ThreadPoolExecutor
 from threading import BoundedSemaphore, Lock
 from time import sleep
@@ -351,10 +352,13 @@ def test_main_aggregation_cursor_is_streamed_and_closed():
             list(tasks)
             return []
 
-    with (
-        patch.object(plugin_module, "MongoClient", return_value=source_client),
-        patch.object(plugin_module, "Parallel", RecordingParallel),
-    ):
+    with ExitStack() as stack:
+        stack.enter_context(
+            patch.object(plugin_module, "MongoClient", return_value=source_client)
+        )
+        stack.enter_context(
+            patch.object(plugin_module, "Parallel", RecordingParallel)
+        )
         instance.process_opendata()
 
     assert source_collection.aggregate.call_args.kwargs["batchSize"] == 1000

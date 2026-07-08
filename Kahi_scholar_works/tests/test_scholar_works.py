@@ -1,4 +1,5 @@
 from copy import deepcopy
+from contextlib import ExitStack
 from concurrent.futures import ThreadPoolExecutor
 from threading import BoundedSemaphore, Lock
 from time import sleep
@@ -113,14 +114,15 @@ def test_update_adds_abstract_only_when_missing_and_adds_new_title():
     )
     collection = MagicMock()
 
-    with (
-        patch.object(parser_module, "lang_poll", return_value="en") as lang_poll,
-        patch.object(
+    with ExitStack() as stack:
+        lang_poll = stack.enter_context(
+            patch.object(parser_module, "lang_poll", return_value="en")
+        )
+        stack.enter_context(patch.object(
             parser_module,
             "text_to_inverted_index",
             return_value={"A": [0], "useful": [1], "abstract": [2]},
-        ),
-    ):
+        ))
         process_module.process_one_update(
             scholar_record(), work, collection, empty_work()
         )
@@ -143,12 +145,11 @@ def test_already_updated_work_backfills_only_missing_abstract():
     work = target_work(updated=[{"source": "scholar", "time": 1}])
     collection = MagicMock()
 
-    with (
-        patch.object(parser_module, "lang_poll", return_value="en"),
-        patch.object(
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(parser_module, "lang_poll", return_value="en"))
+        stack.enter_context(patch.object(
             parser_module, "text_to_inverted_index", return_value={"text": [0]}
-        ),
-    ):
+        ))
         process_module.process_one_update(
             scholar_record(), work, collection, empty_work()
         )
@@ -232,10 +233,13 @@ def test_process_scholar_streams_cursor_with_projection():
             list(tasks)
             return []
 
-    with (
-        patch.object(scholar_module, "MongoClient", return_value=client),
-        patch.object(scholar_module, "Parallel", RecordingParallel),
-    ):
+    with ExitStack() as stack:
+        stack.enter_context(
+            patch.object(scholar_module, "MongoClient", return_value=client)
+        )
+        stack.enter_context(
+            patch.object(scholar_module, "Parallel", RecordingParallel)
+        )
         instance.process_scholar()
 
     assert (
