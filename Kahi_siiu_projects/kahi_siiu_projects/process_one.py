@@ -76,9 +76,12 @@ def process_one_insert(siiu_reg, db, collection, empty_project, es_handler, verb
     """
     # parse
     entry = parse_siiu(siiu_reg, empty_project.copy())
+    if entry is None:
+        return
     # search authors and affiliations in db
     # authors
-    for i, author in enumerate(entry["authors"]):
+    valid_authors = []
+    for author in entry["authors"]:
         # and author["affiliations"]:
         for ext in author["external_ids"]:
             author_db = db["person"].find_one(
@@ -113,10 +116,11 @@ def process_one_insert(siiu_reg, db, collection, empty_project, es_handler, verb
                     if aff_unit not in author["affiliations"]:
                         author["affiliations"].append(aff_unit)
 
-        del author["external_ids"]
+        author.pop("external_ids", None)
 
-        if author['full_name'] == '':
-            del entry["authors"][i]
+        if author.get('full_name'):
+            valid_authors.append(author)
+    entry["authors"] = valid_authors
     entry["author_count"] = len(entry["authors"])
 
     for author in entry["authors"]:
@@ -131,10 +135,16 @@ def process_one_insert(siiu_reg, db, collection, empty_project, es_handler, verb
                         if aff not in entry["groups"]:
                             entry["groups"].append(aff)
     # insert in mongo
-    collection.insert_one(entry)
+    code = siiu_reg.get("CODIGO")
+    collection.update_one(
+        {"external_ids": {"$elemMatch": {"source": "codigo", "id": code}}},
+        {"$setOnInsert": entry}, upsert=True,
+    )
 
 
 def process_one(siiu_reg, db, collection, empty_project, es_handler, verbose=0):
     # just inserting at the moment
+    if not siiu_reg.get("CODIGO"):
+        return
     process_one_insert(siiu_reg, db, collection,
                        empty_project, es_handler, verbose)

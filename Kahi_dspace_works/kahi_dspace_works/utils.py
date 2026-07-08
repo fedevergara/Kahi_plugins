@@ -3,6 +3,21 @@ from thefuzz import process, fuzz
 from unidecode import unidecode
 
 
+def get_dim_fields(reg):
+    """Return DIM fields as a list, tolerating singleton or malformed metadata."""
+    try:
+        fields = reg["OAI-PMH"]["GetRecord"]["record"]["metadata"]["dim:dim"][
+            "dim:field"
+        ]
+    except (KeyError, TypeError):
+        return []
+    if isinstance(fields, dict):
+        return [fields]
+    if isinstance(fields, list):
+        return [field for field in fields if isinstance(field, dict)]
+    return []
+
+
 def get_doi(reg):
     """
     helps to get the doi from the dspace record and process it with the doi_processor.
@@ -17,9 +32,7 @@ def get_doi(reg):
     str | None
         doi processed or None if there is no doi or it is invalid.
     """
-    for field in reg["OAI-PMH"]["GetRecord"]["record"]["metadata"]["dim:dim"][
-        "dim:field"
-    ]:
+    for field in get_dim_fields(reg):
         if "#text" not in field:
             continue
         if field["@element"] == "identifier" and "@qualifier" in field:
@@ -215,8 +228,7 @@ def is_thesis_work(reg):
     bool
         True if the dspace record is a valid product to be processed, False otherwise.
     """
-    for field in reg["OAI-PMH"]["GetRecord"]["record"]["metadata"]["dim:dim"][
-            "dim:field"]:
+    for field in get_dim_fields(reg):
         if field["@element"] == "type":
             if "#text" not in field:
                 continue
@@ -239,10 +251,14 @@ def get_oai_pmh_url(reg):
     str
         oai-pmh url.
     """
-    base_url = reg['OAI-PMH']['request']['#text']
-    verb = reg['OAI-PMH']['request']['@verb']
-    metadataPrefix = reg['OAI-PMH']['request']['@metadataPrefix']
-    identifier = reg['OAI-PMH']['request']['@identifier']
+    try:
+        request = reg["OAI-PMH"]["request"]
+        base_url = request["#text"]
+        verb = request["@verb"]
+        metadataPrefix = request["@metadataPrefix"]
+        identifier = request["@identifier"]
+    except (KeyError, TypeError):
+        return ""
 
     url = f"{base_url}?verb={verb}&metadataPrefix={metadataPrefix}&identifier={identifier}"
     return url

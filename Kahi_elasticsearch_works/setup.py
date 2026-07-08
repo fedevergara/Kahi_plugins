@@ -82,7 +82,8 @@ def main():
         install_requires=[
             'kahi',
             'pymongo',
-            'mohan'
+            'mohan',
+            'elasticsearch'
         ],
     )
 

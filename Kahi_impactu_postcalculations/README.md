@@ -39,7 +39,19 @@ workflow:
     database_name: kahi_calculations
     openalex_database_url: localhost:27017
     openalex_database_name: openalexco
-    inference_endpoint: http://localhost:8080/invocations
+    inference_endpoint: http://localhost:8082/invocations
+    topics_enabled: true
+    topic_jobs: 4
+    topic_batch_size: 1
+    topic_request_timeout: 300
+    topic_request_retries: 3
+    denormalization_enabled: true
+    networks_enabled: true
+    top_words_strategy: legacy
+    top_words_batch_size: 500
+    top_words_backend: threading
+    top_words_jobs: 4
+    force_recalculate: false
     backend: multiprocessing
     n_jobs: 6
     verbose: 5
@@ -51,6 +63,24 @@ Notes:
 - The internal denormalization parallel setup is fixed to `parallel_collections = true`.
 - The internal denormalization parallel setup is fixed to `collection_jobs = 3`.
 - These two values are defined in code and are not configurable from the workflow YAML.
+- Topic inference sends `topic_batch_size` works per request and writes each
+  completed batch with a single unordered bulk operation.
+- Set `denormalization_enabled: false` only when denormalization already
+  completed and the plugin is being resumed at topic inference.
+- Set `force_recalculate` to `true` when the calculations database contains
+  results from an older ETL and networks/top words must be refreshed.
+- Set `networks_enabled` to `false` to skip affiliation and person
+  co-authorship networks without disabling the remaining post-calculations.
+- Set `topics_enabled` to `false` to skip topic inference when all pending
+  works were already processed and the plugin is being resumed.
+- `top_words_backend` and `top_words_jobs` control only the top-words phase.
+  Use `threading` with a small worker count to avoid exhausting MongoDB
+  connections while the general plugin backend remains unchanged.
+- Set `top_words_strategy: works_scan` to compute person and affiliation
+  top words by scanning `works` once. The output schema is unchanged, but
+  titles are processed once per work instead of once per person/affiliation.
+- Type-mapping warnings are emitted only with `verbose: 4` or higher. Type
+  mappings are compiled once per source and reused by all workers.
 
 
 # License
@@ -58,4 +88,3 @@ BSD-3-Clause License
 
 # Links
 http://colav.udea.edu.co/
-

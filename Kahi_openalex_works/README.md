@@ -34,6 +34,9 @@ if you only wants to process works with doi, you can skip this step and remove t
 
 **But it is mandatory to put `openalex_works/doi` in the yaml file.**
 
+The plugin creates the MongoDB indexes required by its work and author
+lookups, including `works.external_ids.id_1` and `person.full_name_1`.
+
 # Usage
 To use this plugin you must have kahi installed in your system and construct a yaml file such as
 ```yaml
@@ -72,4 +75,3 @@ BSD-3-Clause License
 
 # Links
 http://colav.udea.edu.co/
-

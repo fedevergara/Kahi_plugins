@@ -56,7 +56,10 @@ def parse_ciarp(reg, affiliation, empty_work):
     if not entry["source"]:
         entry["source"] = {
             "name": reg["revista"], "external_ids": []}
-    entry["year_published"] = int(reg["año"])
+    try:
+        entry["year_published"] = int(reg["año"])
+    except (TypeError, ValueError):
+        entry["year_published"] = None
     if reg["volumen"]:
         entry["bibliographic_info"]["volume"] = reg["volumen"]
     if reg["issue"]:
@@ -64,7 +67,7 @@ def parse_ciarp(reg, affiliation, empty_work):
     if reg["primera_página"]:
         entry["bibliographic_info"]["start_page"] = reg["primera_página"]
     if reg["última_página"]:
-        entry["bibliographic_info"]["start_page"] = reg["última_página"]
+        entry["bibliographic_info"]["end_page"] = reg["última_página"]
     if reg["ranking"]:
         entry["types"].append(
             {"provenance": "ciarp", "source": "ciarp", "type": reg["ranking"]})
@@ -113,4 +116,10 @@ def parse_ciarp(reg, affiliation, empty_work):
 
     entry["external_ids"].append(
         {"provenance": "ciarp", "source": "ciarp", "id": reg["index"]})
+    if reg.get("source_record_id"):
+        entry["external_ids"].append({
+            "provenance": "ciarp",
+            "source": "ciarp_record",
+            "id": str(reg["source_record_id"]),
+        })
     return entry

@@ -2,6 +2,70 @@ from time import time
 from kahi_impactu_utils.Utils import doi_processor, compare_author, split_names, split_names_fix
 from kahi_ciarp_works.parser import parse_ciarp
 from bson import ObjectId
+from threading import Lock
+
+
+_INSERT_LOCKS = tuple(Lock() for _ in range(256))
+
+
+def run_es_operation(semaphore, operation, *args, **kwargs):
+    if semaphore is None:
+        return operation(*args, **kwargs)
+    with semaphore:
+        return operation(*args, **kwargs)
+
+
+def ciarp_record_id(entry):
+    return next((
+        ext.get("id") for ext in entry.get("external_ids", [])
+        if ext.get("source") == "ciarp_record" and ext.get("id")
+    ), None)
+
+
+def ciarp_record_query(record_id):
+    return {"external_ids": {"$elemMatch": {
+        "source": "ciarp_record", "id": str(record_id)}}}
+
+
+def ciarp_insert_lock(record_id):
+    return _INSERT_LOCKS[hash(str(record_id)) % len(_INSERT_LOCKS)]
+
+
+def build_es_work(entry):
+    if not entry.get("titles") or not entry["titles"][0].get(
+            "title", "").strip():
+        return None
+    bibliographic_info = entry.get("bibliographic_info", {})
+    return {
+        "title": entry["titles"][0]["title"],
+        "source": entry.get("source", {}).get("name", ""),
+        "year": entry.get("year_published") or 0,
+        "volume": bibliographic_info.get("volume", ""),
+        "issue": bibliographic_info.get("issue", ""),
+        "first_page": bibliographic_info.get("start_page", ""),
+        "last_page": bibliographic_info.get("end_page", ""),
+        "authors": [
+            author["full_name"]
+            for author in entry.get("authors", [])[:5]
+            if author.get("full_name")
+        ],
+        "provenance": "ciarp",
+    }
+
+
+def ensure_es_work(entry, work_id, es_handler, es_semaphore=None):
+    if not es_handler or work_id is None:
+        return
+    document = build_es_work(entry)
+    if document is None:
+        return
+    exists = run_es_operation(
+        es_semaphore, es_handler.es.exists,
+        index=es_handler.es_index, id=str(work_id))
+    if not exists:
+        run_es_operation(
+            es_semaphore, es_handler.insert_work,
+            _id=str(work_id), work=document)
 
 
 def get_doi(reg):
@@ -118,10 +182,19 @@ def process_author(entry, colav_reg, db, verbose=0):
         if 'external_ids' in ciarp_author.keys():
             author_ids = ciarp_author['external_ids'][0]
             author_db = db['person'].find_one(
-                {'external_ids.id': author_ids["id"]}, {"_id": 1, "full_name": 1, "affiliations": 1, "first_names": 1, "last_names": 1, "initials": 1, "external_ids": 1})
+                {
+                    'external_ids.id': author_ids["id"]},
+                {
+                    "_id": 1,
+                    "full_name": 1,
+                    "affiliations": 1,
+                    "first_names": 1,
+                    "last_names": 1,
+                    "initials": 1,
+                    "external_ids": 1})
             if not author_db:
-                author_db = db['person'].find_one(
-                    {'external_ids.id.COD_RH': author_ids["id"]}, {"_id": 1, "full_name": 1, "affiliations": 1, "first_names": 1, "last_names": 1, "initials": 1, "external_ids": 1})
+                author_db = db['person'].find_one({'external_ids.id.COD_RH': author_ids["id"]}, {
+                    "_id": 1, "full_name": 1, "affiliations": 1, "first_names": 1, "last_names": 1, "initials": 1, "external_ids": 1})
         if author_db:
             name_match = None
             affiliation_match = None
@@ -155,7 +228,9 @@ def process_author(entry, colav_reg, db, verbose=0):
                         {'_id': author['id']}, {"_id": 1, "full_name": 1, "first_names": 1, "last_names": 1, "initials": 1, "external_ids": 1})
                     if author_reg is None:
                         print(
-                            f"ERROR: author with id {author['id']} not found in colav database")
+                            f"ERROR: author with id {
+                                author['id']} found not in colav database")
+                        continue
 
                 # Note: even in openalex names are bad splitted, so we need to fix them
                 # ex: 'full_name': 'Claudia Marcela-Vélez', 'first_names': ['Claudia'], 'last_names': ['Marcela', 'Vélez']  where Marcela is the first name and Vélez is the last name
@@ -190,8 +265,8 @@ def process_author(entry, colav_reg, db, verbose=0):
                 if name_match and affiliation_match:
                     # replace the author in the colav register
                     for reg in author_db["affiliations"]:
-                        reg.pop('start_date')
-                        reg.pop('end_date')
+                        reg.pop('start_date', None)
+                        reg.pop('end_date', None)
                     # adding the group, faculty and department for the author
                     groups = []
                     affs_ids = [aff_id["id"]
@@ -224,7 +299,14 @@ def process_author(entry, colav_reg, db, verbose=0):
                     break
 
 
-def process_one_update(ciarp_reg, colav_reg, db, collection, affiliation, empty_work, verbose=0):
+def process_one_update(
+        ciarp_reg,
+        colav_reg,
+        db,
+        collection,
+        affiliation,
+        empty_work,
+        verbose=0):
     """
     Method to update a register in the kahi database from ciarp database if it is found.
     This means that the register is already on the kahi database and it is being updated with new information.
@@ -250,7 +332,8 @@ def process_one_update(ciarp_reg, colav_reg, db, collection, affiliation, empty_
     colav_reg["updated"].append(
         {"source": "ciarp", "time": int(time())})
     # titles
-    colav_reg["titles"].extend(title for title in entry["titles"] if title not in colav_reg["titles"])
+    colav_reg["titles"].extend(
+        title for title in entry["titles"] if title not in colav_reg["titles"])
     # external_ids
     ext_ids = [ext["id"] for ext in colav_reg["external_ids"]]
     for ext in entry["external_ids"]:
@@ -261,11 +344,11 @@ def process_one_update(ciarp_reg, colav_reg, db, collection, affiliation, empty_
     author = entry["authors"][0]
     author_db = None
     for ext in author["external_ids"]:
-        author_db = db["person"].find_one(
-            {"external_ids.id": ext["id"]}, {"full_name": 1, "affiliations": 1, "external_ids": 1})
+        author_db = db["person"].find_one({"external_ids.id": ext["id"]}, {
+            "full_name": 1, "affiliations": 1, "external_ids": 1})
         if not author_db:
-            author_db = db["person"].find_one(
-                {"external_ids.id.COD_RH": ext["id"]}, {"_id": 1, "full_name": 1, "affiliations": 1, "external_ids": 1})
+            author_db = db["person"].find_one({"external_ids.id.COD_RH": ext["id"]}, {
+                "_id": 1, "full_name": 1, "affiliations": 1, "external_ids": 1})
         if author_db:
             break
     if author_db:
@@ -302,7 +385,9 @@ def process_one_update(ciarp_reg, colav_reg, db, collection, affiliation, empty_
     author["affiliations"] = [
         aff for aff in author["affiliations"] if aff.get("name", "") != ""]
     # Check if year of the publication is in the author affiliation years
-    if author_db and entry["year_published"] and int(entry["year_published"]) in extract_affiliation_years(author_db["affiliations"]):
+    if author_db and entry["year_published"] and int(
+            entry["year_published"]) in extract_affiliation_years(
+            author_db["affiliations"]):
         author["affiliations"] = author["affiliations"]
     else:
         author["affiliations"] = []
@@ -328,7 +413,8 @@ def process_one_update(ciarp_reg, colav_reg, db, collection, affiliation, empty_
     )
 
 
-def process_one_insert(ciarp_reg, db, collection, affiliation, empty_work, es_handler, verbose=0):
+def process_one_insert(ciarp_reg, db, collection, affiliation, empty_work,
+                       es_handler, verbose=0, es_semaphore=None):
     """
     Function to insert a new register in the database if it is not found in the colav(kahi works) database.
     This means that the register is not on the database and it is being inserted.
@@ -357,6 +443,9 @@ def process_one_insert(ciarp_reg, db, collection, affiliation, empty_work, es_ha
     # parse
     entry = parse_ciarp(
         ciarp_reg, affiliation, empty_work)
+    if not entry.get("titles") or not entry["titles"][0].get(
+            "title", "").strip():
+        return
 
     source_db = None
     if "external_ids" in entry["source"].keys():
@@ -381,7 +470,8 @@ def process_one_insert(ciarp_reg, db, collection, affiliation, empty_work, es_ha
         if len(entry["source"]["external_ids"]) == 0:
             if verbose > 4:
                 print(
-                    f'Register with doi: {ciarp_reg["doi"]} does not provide a source')
+                    f'Register with doi: {
+                        ciarp_reg["doi"]} does not provide a source')
         else:
             if verbose > 4:
                 print("No source found for\n\t",
@@ -397,11 +487,11 @@ def process_one_insert(ciarp_reg, db, collection, affiliation, empty_work, es_ha
     for i, author in enumerate(entry["authors"]):
         author_db = None
         for ext in author["external_ids"]:
-            author_db = db["person"].find_one(
-                {"external_ids.id": ext["id"]}, {"_id": 1, "full_name": 1, "affiliations": 1, "external_ids": 1})
+            author_db = db["person"].find_one({"external_ids.id": ext["id"]}, {
+                "_id": 1, "full_name": 1, "affiliations": 1, "external_ids": 1})
             if not author_db:
-                author_db = db["person"].find_one(
-                    {"external_ids.id.COD_RH": ext["id"]}, {"_id": 1, "full_name": 1, "affiliations": 1, "external_ids": 1})
+                author_db = db["person"].find_one({"external_ids.id.COD_RH": ext["id"]}, {
+                    "_id": 1, "full_name": 1, "affiliations": 1, "external_ids": 1})
             if author_db:
                 break
         if author_db:
@@ -416,19 +506,20 @@ def process_one_insert(ciarp_reg, db, collection, affiliation, empty_work, es_ha
 
             # Check if the author affiliation in the year of the publication
             aff_correspond = False
-            if entry["year_published"] and int(entry["year_published"]) in extract_affiliation_years(author_db["affiliations"]):
+            if entry["year_published"] and int(
+                    entry["year_published"]) in extract_affiliation_years(
+                    author_db["affiliations"]):
                 aff_correspond = True
 
             entry["authors"][i] = {
                 "id": author_db["_id"],
                 "full_name": author_db["full_name"],
-                "affiliations": author["affiliations"] if aff_correspond else []
-            }
+                "affiliations": author["affiliations"] if aff_correspond else []}
             if "external_ids" in author.keys():
                 del (author["external_ids"])
         else:
-            author_db = db["person"].find_one(
-                {"full_name": author["full_name"]}, {"_id": 1, "full_name": 1, "affiliations": 1, "external_ids": 1})
+            author_db = db["person"].find_one({"full_name": author["full_name"]}, {
+                "_id": 1, "full_name": 1, "affiliations": 1, "external_ids": 1})
             if author_db:
                 sources = [ext["source"]
                            for ext in author_db["external_ids"]]
@@ -439,16 +530,18 @@ def process_one_insert(ciarp_reg, db, collection, affiliation, empty_work, es_ha
                         sources.append(ext["source"])
                         ids.append(ext["id"])
 
-                # Check if the author affiliation in the year of the publication
+                # Check if the author affiliation in the year of the
+                # publication
                 aff_correspond = False
-                if entry["year_published"] and int(entry["year_published"]) in extract_affiliation_years(author_db["affiliations"]):
+                if entry["year_published"] and int(
+                        entry["year_published"]) in extract_affiliation_years(
+                        author_db["affiliations"]):
                     aff_correspond = True
 
                 entry["authors"][i] = {
                     "id": author_db["_id"],
                     "full_name": author_db["full_name"],
-                    "affiliations": author["affiliations"] if aff_correspond else []
-                }
+                    "affiliations": author["affiliations"] if aff_correspond else []}
             else:
                 entry["authors"][i] = {
                     "id": "",
@@ -508,34 +601,27 @@ def process_one_insert(ciarp_reg, db, collection, affiliation, empty_work, es_ha
                         }
 
     entry["author_count"] = len(entry["authors"])
-    # insert in mongo
-    response = collection.insert_one(entry)
-    # insert in elasticsearch
-    if es_handler:
-        work = {}
-        work["title"] = entry["titles"][0]["title"]
-        work["source"] = entry["source"]["name"] if "name" in entry["source"].keys() else ""
-        work["year"] = entry["year_published"]
-        work["volume"] = entry["bibliographic_info"]["volume"] if "volume" in entry["bibliographic_info"].keys() else ""
-        work["issue"] = entry["bibliographic_info"]["issue"] if "issue" in entry["bibliographic_info"].keys() else ""
-        work["first_page"] = entry["bibliographic_info"]["first_page"] if "first_page" in entry["bibliographic_info"].keys() else ""
-        work["last_page"] = entry["bibliographic_info"]["last_page"] if "last_page" in entry["bibliographic_info"].keys() else ""
-        authors = []
-        for author in entry['authors']:
-            if len(authors) >= 5:
-                break
-            if "full_name" in author.keys():
-                authors.append(author["full_name"])
-        work["authors"] = authors
-        work["provenance"] = "ciarp"
-
-        es_handler.insert_work(_id=str(response.inserted_id), work=work)
+    # insert idempotently while preserving the historical timestamp ID
+    record_id = ciarp_record_id(entry)
+    if record_id:
+        with ciarp_insert_lock(record_id):
+            response = collection.update_one(
+                ciarp_record_query(record_id),
+                {"$setOnInsert": entry},
+                upsert=True)
+            inserted_id = response.upserted_id
+        if inserted_id is None:
+            existing = collection.find_one(
+                ciarp_record_query(record_id), {"_id": 1})
+            inserted_id = existing.get("_id") if existing else None
     else:
-        if verbose > 4:
-            print("No elasticsearch index provided")
+        response = collection.insert_one(entry)
+        inserted_id = response.inserted_id
+    ensure_es_work(entry, inserted_id, es_handler, es_semaphore)
 
 
-def process_one(ciarp_reg, db, collection, affiliation, empty_work, similarity, es_handler, verbose=0):
+def process_one(ciarp_reg, db, collection, affiliation, empty_work, similarity,
+                es_handler, verbose=0, es_semaphore=None):
     """
     Function to process a single register from the ciarp database.
     This function is used to insert or update a register in the colav(kahi works) database.
@@ -559,6 +645,10 @@ def process_one(ciarp_reg, db, collection, affiliation, empty_work, similarity, 
     verbose: int
         Verbosity level
     """
+    title = ciarp_reg.get("título")
+    if not isinstance(title, str) or not title.strip():
+        return
+
     doi = None
     # register has doi
     if ciarp_reg["doi"]:
@@ -572,19 +662,19 @@ def process_one(ciarp_reg, db, collection, affiliation, empty_work, similarity, 
                                collection, affiliation, empty_work, verbose)
         else:  # insert a new register
             process_one_insert(ciarp_reg, db, collection,
-                               affiliation, empty_work, es_handler, verbose)
+                               affiliation, empty_work, es_handler, verbose,
+                               es_semaphore=es_semaphore)
     elif similarity:  # does not have a doi identifier
         # elasticsearch section
         entry = parse_ciarp(ciarp_reg, affiliation, empty_work)
+        record_id = ciarp_record_id(entry)
+        existing = (collection.find_one(
+            ciarp_record_query(record_id), {"_id": 1}) if record_id else None)
+        if existing:
+            ensure_es_work(entry, existing["_id"], es_handler, es_semaphore)
+            return
         if es_handler:
-            work = {}
-            work["title"] = entry["titles"][0]["title"]
-            work["source"] = entry["source"]["name"]
-            work["year"] = entry["year_published"]
-            work["volume"] = entry["bibliographic_info"]["volume"] if "volume" in entry["bibliographic_info"].keys() else ""
-            work["issue"] = entry["bibliographic_info"]["issue"] if "issue" in entry["bibliographic_info"].keys() else ""
-            work["first_page"] = entry["bibliographic_info"]["first_page"] if "first_page" in entry["bibliographic_info"].keys() else ""
-            work["last_page"] = entry["bibliographic_info"]["last_page"] if "last_page" in entry["bibliographic_info"].keys() else ""
+            work = build_es_work(entry)
             authors = []
             for author in entry['authors']:
                 if len(authors) >= 5:
@@ -597,7 +687,8 @@ def process_one(ciarp_reg, db, collection, affiliation, empty_work, similarity, 
                         author["full_name"] = author_db["full_name"]
                     authors.append(author["full_name"])
             work["authors"] = authors
-            response = es_handler.search_work(
+            response = run_es_operation(
+                es_semaphore, es_handler.search_work,
                 title=work["title"],
                 source=work["source"],
                 year=work["year"],
@@ -613,7 +704,13 @@ def process_one(ciarp_reg, db, collection, affiliation, empty_work, similarity, 
                     {"_id": ObjectId(response["_id"])})
                 if colav_reg:
                     process_one_update(
-                        ciarp_reg, colav_reg, db, collection, affiliation, empty_work, verbose)
+                        ciarp_reg,
+                        colav_reg,
+                        db,
+                        collection,
+                        affiliation,
+                        empty_work,
+                        verbose)
                 else:
                     if verbose > 4:
                         print("Register with {} not found in mongodb".format(
@@ -621,7 +718,8 @@ def process_one(ciarp_reg, db, collection, affiliation, empty_work, similarity, 
             else:  # insert new register
                 # print("Inserting new register")
                 process_one_insert(
-                    ciarp_reg, db, collection, affiliation, empty_work, es_handler, verbose)
+                    ciarp_reg, db, collection, affiliation, empty_work,
+                    es_handler, verbose, es_semaphore=es_semaphore)
         else:
             if verbose > 4:
                 print("No elasticsearch index provided")

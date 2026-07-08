@@ -1,8 +1,13 @@
 from kahi.KahiBase import KahiBase
 from pymongo import MongoClient, TEXT
-from pandas import read_excel
+from pandas import DataFrame, read_excel
 from time import time
 from kahi_impactu_utils.String import title_case
+
+
+def has_text(value):
+    return value is not None and str(value).strip().lower() not in {
+        "", "nan", "nat", "none"}
 
 
 class Kahi_staff_affiliations(KahiBase):
@@ -22,10 +27,14 @@ class Kahi_staff_affiliations(KahiBase):
         self.collection.create_index("types.type")
         self.collection.create_index([("names.name", TEXT)])
 
-        self.required_columns = ["unidad_académica", "subunidad_académica",
-                                 "código_unidad_académica", "código_subunidad_académica"]
+        self.required_columns = [
+            "unidad_académica",
+            "subunidad_académica",
+            "código_unidad_académica",
+            "código_subunidad_académica"]
 
         self.verbose = config["verbose"] if "verbose" in config else 0
+        self.n_jobs = config["staff_affiliations"].get("num_jobs", 1)
 
     def _id_creator(self, institution_id, reg, aff, unit):
         """
@@ -56,13 +65,86 @@ class Kahi_staff_affiliations(KahiBase):
         if unit == "código_unidad_académica":
             _id = f"{institution_id}_{reg['código_unidad_académica']}"
         if unit == "código_subunidad_académica":
-            _id = f"{institution_id}_{reg['código_unidad_académica']}_{reg['código_subunidad_académica']}"
+            _id = f"{institution_id}_{
+                reg['código_unidad_académica']}_{
+                reg['código_subunidad_académica']}"
 
         return _id
 
-    def staff_affiliation(self, data, institution_id, institution_name, staff_reg):
+    def _source_collection(self, config):
+        source_url = config.get("database_url", self.config["database_url"])
+        source_db_name = config.get("database_name", "institutional_data")
+        source_collection_name = config.get(
+            "staff_collection_name", config.get("collection_name", "staff"))
+        client = MongoClient(source_url)
+        return client, client[source_db_name][source_collection_name], source_db_name, source_collection_name
+
+    def _institution_ids(self):
+        if "databases" in self.config["staff_affiliations"]:
+            return [
+                config["institution_id"].replace("https://ror.org/", "")
+                for config in self.config["staff_affiliations"]["databases"]
+            ]
+
+        client, collection, _, _ = self._source_collection(
+            self.config["staff_affiliations"])
+        try:
+            return sorted(collection.distinct("institution_id"))
+        finally:
+            client.close()
+
+    def _config_for_institution(self, institution_id):
+        for config in self.config["staff_affiliations"].get("databases", []):
+            if config["institution_id"].replace(
+                    "https://ror.org/", "") == institution_id:
+                return config
+        return self.config["staff_affiliations"]
+
+    def _load_staff_data(self, config, institution_id):
+        dtype_mapping = {col: str for col in self.required_columns}
+        if "file_path" in config:
+            data = read_excel(
+                config["file_path"],
+                dtype=dtype_mapping).fillna("")
+            for aff in self.required_columns:
+                if aff not in data.columns:
+                    print(
+                        f"Column {aff} found not in file {
+                            config['file_path']}, and it is required.")
+                    raise ValueError(f"Column {aff} found not in file")
+            return data
+
+        client, collection, source_db_name, source_collection_name = self._source_collection(
+            config)
+        try:
+            records = list(collection.find(
+                {"institution_id": institution_id}, {"_id": 0}))
+        finally:
+            client.close()
+
+        if not records:
+            raise ValueError(
+                f"No staff records found for institution {institution_id} in "
+                f"{source_db_name}.{source_collection_name}")
+
+        data = DataFrame(records).fillna("")
+        for col in self.required_columns:
+            if col not in data.columns:
+                data[col] = ""
+            data[col] = data[col].astype(str)
+        return data
+
+    def staff_affiliation(
+            self,
+            data,
+            institution_id,
+            institution_name,
+            staff_reg):
         # inserting faculties and departments
         for idx, reg in data.iterrows():
+            if not has_text(reg["unidad_académica"]):
+                continue
+
             name = title_case(reg["unidad_académica"])
             _id = self._id_creator(institution_id, reg,
                                    staff_reg, "código_unidad_académica")
@@ -93,12 +175,15 @@ class Kahi_staff_affiliations(KahiBase):
                     fac = self.collection.insert_one(entry)
                     self.facs_inserted[name] = fac.inserted_id
 
-            if reg["subunidad_académica"] != "":
+            if has_text(reg["subunidad_académica"]):
                 name_dep = title_case(reg["subunidad_académica"])
                 name_dep_id = str(reg["código_unidad_académica"]) + \
                     "_" + title_case(reg["subunidad_académica"])
                 _id = self._id_creator(
-                    institution_id, reg, staff_reg, "código_subunidad_académica")
+                    institution_id,
+                    reg,
+                    staff_reg,
+                    "código_subunidad_académica")
                 if name_dep_id not in self.deps_inserted.keys():
                     is_in_db = self.collection.find_one({"_id": _id})
                     if is_in_db:
@@ -157,17 +242,19 @@ class Kahi_staff_affiliations(KahiBase):
         if self.verbose > 4:
             start_time = time()
 
-        for config in self.config["staff_affiliations"]["databases"]:
+        for institution_id in self._institution_ids():
+            config = self._config_for_institution(institution_id)
             self.facs_inserted = {}
             self.deps_inserted = {}
             self.fac_dep = []
-            institution_id = config["institution_id"].replace(
-                "https://ror.org/", "")
             staff_reg = self.collection.find_one({"_id": institution_id})
+            if not staff_reg:
+                staff_reg = self.collection.find_one(
+                    {"external_ids.id": f"https: //ror.org/{institution_id}"})
             if not staff_reg:
                 print("Institution not found in database")
                 raise ValueError(
-                    f"Institution {institution_id} not found in database")
+                    f"Institution {institution_id} found not in database")
             else:
                 institution_name = ""
                 for name in staff_reg["names"]:
@@ -180,19 +267,10 @@ class Kahi_staff_affiliations(KahiBase):
                 print("Processing staff affiliations for institution: ",
                       institution_name)
 
-            file_path = config["file_path"]
-            dtype_mapping = {col: str for col in self.required_columns}
-            data = read_excel(file_path, dtype=dtype_mapping).fillna("")
+            data = self._load_staff_data(config, institution_id)
             if self.verbose > 4:
                 # Print shape of the data
                 print("Data shape: ", data.shape)
-
-            # Check if the columns are in the file
-            for aff in self.required_columns:
-                if aff not in data.columns:
-                    print(
-                        f"Column {aff} not found in file {file_path}, and it is required.")
-                    raise ValueError(f"Column {aff} not found in file")
             self.staff_affiliation(data, institution_id,
                                    institution_name, staff_reg)
 

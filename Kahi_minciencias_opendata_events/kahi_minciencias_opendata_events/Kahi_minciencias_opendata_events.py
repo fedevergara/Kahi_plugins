@@ -51,8 +51,9 @@ class Kahi_minciencias_opendata_events(KahiBase):
             es_index = config["minciencias_opendata_events"]["es_index"]
             es_url = config["minciencias_opendata_events"]["es_url"]
             if config["minciencias_opendata_events"]["es_user"] and config["minciencias_opendata_events"]["es_password"]:
-                es_auth = (config["minciencias_opendata_events"]["es_user"],
-                           config["minciencias_opendata_events"]["es_password"])
+                es_auth = (
+                    config["minciencias_opendata_events"]["es_user"],
+                    config["minciencias_opendata_events"]["es_password"])
             else:
                 es_auth = None
             self.es_handler = Similarity(
@@ -113,33 +114,36 @@ class Kahi_minciencias_opendata_events(KahiBase):
         opendata.create_index("id_producto_pd")
         opendata.create_index("nme_tipologia_pd")
 
-        events = ["Evento científico",
-                  "Eventos artísticos, de arquitectura o de diseño con componentes de apropiación", "Eventos artísticos"]
+        events = [
+            "Evento científico",
+            "Eventos artísticos, de arquitectura o de diseño con componentes de apropiación",
+            "Eventos artísticos"]
 
         pipeline = [
-            {'$match': {"nme_producto_pd": {"$exists": True}}},
+            {'$match': {"nme_producto_pd": {"$type": "string", "$ne": ""}}},
             {'$match': {'nme_tipologia_pd': {'$in': events}}},
             {'$group': {'_id': '$id_producto_pd', 'originalDoc': {'$first': '$$ROOT'}}},
             {'$replaceRoot': {'newRoot': '$originalDoc'}}
         ]
-        event_list = list(opendata.aggregate(pipeline, allowDiskUse=True))
-        print(
-            f"INFO: Processing events production {len(event_list)} catgories {events}")
-        Parallel(
-            n_jobs=self.n_jobs,
-            verbose=self.verbose,
-            backend="threading")(
-            delayed(process_one)(
-                event,
-                self.db,
-                self.collection,
-                self.empty_event(),
-                None,  # ES not implemented yet
-                insert_all=self.insert_all,
-                thresholds=self.thresholds,
-                verbose=self.verbose
-            ) for event in event_list
-        )
+        cursor = opendata.aggregate(
+            pipeline, allowDiskUse=True, batchSize=1000)
+        print(f"INFO: Processing event categories {events}")
+        try:
+            results = Parallel(
+                n_jobs=self.n_jobs,
+                verbose=self.verbose,
+                backend="threading", pre_dispatch="2*n_jobs",
+                return_as="generator_unordered")(
+                delayed(process_one)(
+                    event, self.db, self.collection, self.empty_event(), None,
+                    insert_all=self.insert_all, thresholds=self.thresholds,
+                    verbose=self.verbose
+                ) for event in cursor
+            )
+            for _ in results:
+                pass
+        finally:
+            cursor.close()
         client.close()
 
     def run(self):

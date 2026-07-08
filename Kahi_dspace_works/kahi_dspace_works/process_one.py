@@ -3,6 +3,90 @@ from kahi_dspace_works.parser import parse_dspace
 from kahi_dspace_works.utils import set_source, get_doi, check_work, str_normilize, title_similarity
 from bson import ObjectId
 from unidecode import unidecode
+from threading import Lock
+from unicodedata import normalize as unicode_normalize
+
+
+_DSPACE_LOCKS = tuple(Lock() for _ in range(1024))
+
+
+def _dspace_lock(value):
+    return _DSPACE_LOCKS[hash(value) % len(_DSPACE_LOCKS)]
+
+
+def run_es_operation(semaphore, operation, *args, **kwargs):
+    if semaphore is None:
+        return operation(*args, **kwargs)
+    with semaphore:
+        return operation(*args, **kwargs)
+
+
+def dspace_query(value):
+    return {
+        "external_ids": {
+            "$elemMatch": {"source": "dspace", "id": value}
+        }
+    }
+
+
+def _normalized_title(value):
+    if not isinstance(value, str):
+        return ""
+    return " ".join(unicode_normalize("NFKC", value).casefold().split())
+
+
+def build_es_work(entry):
+    titles = entry.get("titles") or []
+    title = titles[0].get("title", "").strip() if titles else ""
+    if not title:
+        return None
+    bibliography = entry.get("bibliographic_info") or {}
+    return {
+        "title": title,
+        "source": (entry.get("source") or {}).get("name", ""),
+        "year": entry.get("year_published") or "0",
+        "volume": bibliography.get("volume", ""),
+        "issue": bibliography.get("issue", ""),
+        "first_page": bibliography.get("start_page", ""),
+        "last_page": bibliography.get("end_page", ""),
+        "authors": [
+            author.get("full_name", "")
+            for author in entry.get("authors", [])[:5]
+            if author.get("full_name")
+        ],
+        "provenance": "dspace",
+    }
+
+
+def ensure_es_work(entry, work_id, es_handler, es_semaphore=None):
+    if not es_handler or work_id is None:
+        return
+    work = build_es_work(entry)
+    if work is None:
+        return
+    es_client = getattr(es_handler, "es", None)
+    es_index = getattr(es_handler, "es_index", None)
+    exists = False
+    if es_client is not None and es_index:
+        exists = run_es_operation(
+            es_semaphore, es_client.exists, index=es_index, id=str(work_id)
+        )
+    if not exists:
+        run_es_operation(
+            es_semaphore, es_handler.insert_work, _id=str(work_id), work=work
+        )
+
+
+def find_work_by_es_id(collection, value):
+    if value is None:
+        return None
+    found = collection.find_one({"_id": value})
+    if found:
+        return found
+    try:
+        return collection.find_one({"_id": ObjectId(value)})
+    except Exception:
+        return None
 
 
 def process_one_update(entry, colav_reg, db, collection, verbose):
@@ -25,9 +109,14 @@ def process_one_update(entry, colav_reg, db, collection, verbose):
     # merging the two entries
     colav_reg["updated"].extend(entry["updated"])
 
+    existing_titles = {
+        _normalized_title(title.get("title"))
+        for title in colav_reg["titles"]
+    }
     for title in entry["titles"]:
-        if title not in colav_reg["titles"]:
+        if _normalized_title(title.get("title")) not in existing_titles:
             colav_reg["titles"].append(title)
+            existing_titles.add(_normalized_title(title.get("title")))
 
     if entry["year_published"] and not colav_reg["year_published"]:
         colav_reg["year_published"] = entry["year_published"]
@@ -71,7 +160,8 @@ def process_one_update(entry, colav_reg, db, collection, verbose):
                     # this is required to get  first_names and last_names
                     {'full_name': author['full_name']}, {"_id": 1, "full_name": 1, "first_names": 1, "last_names": 1, "initials": 1, "updated": 1})
             else:
-                # only the name can be compared, because we dont have the affiliation of the author from the paper in author_others
+                # only the name can be compared, because we dont have the
+                # affiliation of the author from the paper in author_others
                 author_db = db['person'].find_one(
                     # this is required to get  first_names and last_names
                     {'_id': author['id']}, {"_id": 1, "full_name": 1, "first_names": 1, "last_names": 1, "initials": 1, "updated": 1})
@@ -105,13 +195,14 @@ def process_one_update(entry, colav_reg, db, collection, verbose):
             "types": colav_reg["types"],
             "authors": colav_reg["authors"],
             "author_count": colav_reg["author_count"],
-            "source": colav_reg["source"]
-
+            "source": colav_reg["source"],
+            "rights": colav_reg["rights"],
         }}
     )
 
 
-def process_one_insert(entry, affiliation, db, collection, es_handler, verbose):
+def process_one_insert(entry, affiliation, db, collection, es_handler, verbose,
+                       es_semaphore=None):
     """
     Insert the entry in the works collection.
 
@@ -137,7 +228,7 @@ def process_one_insert(entry, affiliation, db, collection, es_handler, verbose):
     for author in entry['authors']:
         # verifiying more than one last name
         # https://github.com/colav/impactu/issues/494
-        if len(author["last_names"]) > 1:
+        if len(author.get("last_names", [])) > 1:
             author_normalized = author["full_name"]
             author_normalized = unidecode(author_normalized).lower()
             priotiry_source = ["staff", "scienti", "minciencias"]
@@ -160,41 +251,33 @@ def process_one_insert(entry, affiliation, db, collection, es_handler, verbose):
                 author["id"] = author_found["_id"]
                 if affiliation is not None:
                     author["affiliations"].append(affiliation)
-        del author["first_names"]
-        del author["last_names"]
-        del author["initials"]
+        author.pop("first_names", None)
+        author.pop("last_names", None)
+        author.pop("initials", None)
 
-    # inserting the entry
-    response = collection.insert_one(entry)
-
-    # insert in elasticsearch
-    authors = []
-    if es_handler:
-        work = {}
-        work["title"] = entry["titles"][0]["title"]
-        work["source"] = ""
-        work["year"] = "0"
-        work["volume"] = ""
-        work["issue"] = ""
-        work["first_page"] = ""
-        work["last_page"] = ""
-        for author in entry['authors']:
-            if "full_name" in author.keys():
-                if author["full_name"]:
-                    authors.append(author["full_name"])
-        work["authors"] = authors
-        work["provenance"] = "dspace"
-        if work["title"]:
-            es_handler.insert_work(_id=str(response.inserted_id), work=work)
-        else:
-            if verbose > 4:
-                print("Not enough data for insert in elasticsearch index")
+    dspace_id = next((
+        item.get("id") for item in entry.get("external_ids", [])
+        if item.get("source") == "dspace" and item.get("id")
+    ), None)
+    if dspace_id:
+        with _dspace_lock(dspace_id):
+            response = collection.update_one(
+                dspace_query(dspace_id), {"$setOnInsert": entry}, upsert=True
+            )
+            work_id = response.upserted_id
+            if work_id is None:
+                existing = collection.find_one(
+                    dspace_query(dspace_id), {"_id": 1})
+                work_id = existing.get("_id") if existing else None
     else:
-        if verbose > 4:
-            print("No elasticsearch index provided")
+        response = collection.insert_one(entry)
+        work_id = response.inserted_id
+    ensure_es_work(entry, work_id, es_handler, es_semaphore)
 
 
-def process_one(dspace_reg, affiliation, base_url, db, collection, empty_work, es_handler, similarity, thresholds, verbose=0):
+def process_one(dspace_reg, affiliation, base_url, db, collection, empty_work,
+                es_handler, similarity, thresholds, verbose=0,
+                es_semaphore=None):
     """
     Dspace record is parsed and processed to be inserted/updated in the works collection.
 
@@ -219,22 +302,38 @@ def process_one(dspace_reg, affiliation, base_url, db, collection, empty_work, e
     verbose : int
         verbosity level.
     """
-    if collection.find_one({"external_ids.id": dspace_reg["_id"]}):
+    dspace_id = dspace_reg.get("_id")
+    if not dspace_id:
+        return
+    existing = collection.find_one(dspace_query(dspace_id))
+    if existing:
+        ensure_es_work(existing, existing["_id"], es_handler, es_semaphore)
         if verbose > 4:
-            print("Record with id {} already exists in the works collection".format(
-                dspace_reg["_id"]))
+            print(
+                "Record with id {} already exists in the works collection".format(
+                    dspace_reg["_id"]))
         return
     # processing bad dois as well
     entry = parse_dspace(dspace_reg, empty_work,
                          base_url, verbose)
+    entry["titles"] = [
+        title for title in entry.get("titles", [])
+        if isinstance(title.get("title"), str) and title["title"].strip()
+    ]
     if len(entry["titles"]) == 0:
         if verbose > 4:
-            print("No title found in dspace record {}".format(dspace_reg["_id"]))
+            print(
+                "No title found in dspace record {}".format(
+                    dspace_reg["_id"]))
         return
     set_source(entry, db)  # setting source to entry
     # setting affiliation to authors
     # set_affiliation(entry, affiliation, db['person'])
     if similarity:
+        if es_handler is None:
+            process_one_insert(entry, affiliation, db,
+                               collection, es_handler, verbose, es_semaphore)
+            return
         work = {}
         work["title"] = entry["titles"][0]["title"]
         work["source"] = (
@@ -269,42 +368,50 @@ def process_one(dspace_reg, affiliation, base_url, db, collection, empty_work, e
                 authors.append(str_normilize(author["full_name"]))
         work["authors"] = authors
         work["provenance"] = "dspace"
-        responses = es_handler.search_work(
-            title=str_normilize(work["title"]),
-            source=work["source"],
-            year=str(work["year"]),
-            authors=authors,
-            volume=work["volume"],
-            issue=work["issue"],
-            page_start=work["first_page"],
-            page_end=work["last_page"],
-            use_es_thold=True,
-            es_thold=0,
-            hits=20
-        )
+        responses = run_es_operation(es_semaphore, es_handler.search_work,
+                                     title=str_normilize(work["title"]),
+                                     source=work["source"],
+                                     year=str(work["year"]),
+                                     authors=authors,
+                                     volume=work["volume"],
+                                     issue=work["issue"],
+                                     page_start=work["first_page"],
+                                     page_end=work["last_page"],
+                                     use_es_thold=True,
+                                     es_thold=0,
+                                     hits=20
+                                     )
         if responses:
             found = False
             for response in responses:
                 found = check_work(
                     work["title"], authors, response, thresholds)
                 if found:
-                    colav_reg = collection.find_one(
-                        {"_id": ObjectId(response["_id"])})
+                    colav_reg = find_work_by_es_id(
+                        collection, response.get("_id"))
                     if colav_reg:
                         process_one_update(
                             entry, colav_reg, db, collection, verbose)
                         return
                     else:
                         if verbose > 4:
-                            print("Register with {} not found in mongodb".format(
-                                response["_id"]))
-                        return
+                            print(
+                                "Register with {} not found in mongodb".format(
+                                    response["_id"]))
+                        found = False
+                        continue
             if not found:
-                process_one_insert(entry, affiliation, db,
-                                   collection, es_handler, verbose)
+                process_one_insert(
+                    entry,
+                    affiliation,
+                    db,
+                    collection,
+                    es_handler,
+                    verbose,
+                    es_semaphore)
         else:  # insert new register
             process_one_insert(entry, affiliation, db,
-                               collection, es_handler, verbose)
+                               collection, es_handler, verbose, es_semaphore)
     else:  # if doi
         doi = get_doi(dspace_reg)
         if doi:
@@ -314,12 +421,25 @@ def process_one(dspace_reg, affiliation, base_url, db, collection, empty_work, e
                     process_one_update(
                         entry, colav_reg, db, collection, verbose)
                 else:  # if the dois are equal but the titles are not similar
-                    process_one_insert(entry, affiliation, db,
-                                       collection, es_handler, verbose)
+                    process_one_insert(
+                        entry,
+                        affiliation,
+                        db,
+                        collection,
+                        es_handler,
+                        verbose,
+                        es_semaphore)
 
             else:
-                process_one_insert(entry, affiliation, db,
-                                   collection, es_handler, verbose)
+                process_one_insert(
+                    entry,
+                    affiliation,
+                    db,
+                    collection,
+                    es_handler,
+                    verbose,
+                    es_semaphore)
         else:
             print(
-                f"WARNING: invalid doi found in dspace record {dspace_reg['_id']} ")
+                f"WARNING: invalid doi found in dspace record {
+                    dspace_reg['_id']} ")

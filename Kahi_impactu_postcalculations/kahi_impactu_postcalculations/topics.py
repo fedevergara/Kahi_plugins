@@ -1,115 +1,206 @@
 import requests
+from pymongo import UpdateOne
+from time import sleep
+
 
 type_url_base = "https://openalex.org/T"
 
 
-def request_topic_inference(title, abstract={}, journal_name="", inference_endpoint="http://localhost:8080/invocations"):
-    """
-    Method to request the topic inference for a given work
-
-    Parameters
-    ----------
-    title : str
-        Title of the work
-    abstract : dict, optional
-        Abstract of the work, by default {}
-    journal_name : str, optional
-        Name of the journal where the work was published, by default ""
-    referenced_works : list, optional
-        List of works referenced by the work, by default []
-    inference_endpoint : str, optional
-        Endpoint of the inference service, by default "http://localhost:8080/invocations"
-
-    Returns
-    -------
-    requests.Response
-        Response of the inference service
-    """
-    payload = [
-        {"title": title,
-         "abstract_inverted_index": abstract,
-         "inverted": True,
-         "referenced_works": [],
-         "journal_display_name": journal_name}
-    ]
-
-    req = requests.post(inference_endpoint, json=payload)
-    return req
+def _topic_payload(work):
+    """Build the inference payload for a work, or return None if it is invalid."""
+    titles = work.get("titles") or []
+    abstracts = work.get("abstracts") or []
+    if not titles or not abstracts:
+        return None
+    title = titles[0].get("title")
+    abstract = abstracts[0].get("abstract")
+    if not isinstance(title, str) or not title.strip() or not abstract:
+        return None
+    source = work.get("source") or {}
+    return {
+        "title": title,
+        "abstract_inverted_index": abstract,
+        "inverted": True,
+        "referenced_works": [],
+        "journal_display_name": source.get("name", ""),
+    }
 
 
-def get_openalex_topic(col_oa, topic_pred):
-    """
-    Retrieve the topic from OpenAlex based on the prediction,
-    and add the score of the prediction to the topic.
-    The topic is retrieved from the OpenAlex collection and it has the following fields:
-    - id: URL of the topic
-    - display_name: Name of the topic
-    - subfield: Subfield of the topic
-    - field: Field of the topic
-    - domain: Domain of the topic
-    - score: Score of the prediction
+def request_topic_inference_batch(
+    payload,
+    inference_endpoint="http://localhost:8080/invocations",
+    timeout=300,
+):
+    """Request topic inference for an already validated batch."""
+    return requests.post(inference_endpoint, json=payload, timeout=timeout)
 
-    Parameters
-    ----------
-    col_oa : pymongo.collection.Collection
-        Collection of OpenAlex topics
-    topic_pred : dict
-        Prediction of the topic, with the following fields:
-        - topic_id: ID of the topic
-        - topic_score: Score of the prediction
 
-    Returns
-    -------
-    dict
-        Topic from OpenAlex with the score of the prediction
+def request_topic_inference(
+    title,
+    abstract=None,
+    journal_name="",
+    inference_endpoint="http://localhost:8080/invocations",
+    timeout=300,
+):
+    """Backward-compatible single-work inference request."""
+    payload = [{
+        "title": title,
+        "abstract_inverted_index": abstract or {},
+        "inverted": True,
+        "referenced_works": [],
+        "journal_display_name": journal_name,
+    }]
+    return request_topic_inference_batch(payload, inference_endpoint, timeout)
 
-    """
-    topic_url = type_url_base + str(topic_pred['topic_id'])
-    topic = col_oa.find_one({"id": topic_url}, {
-                            "id": 1, "display_name": 1, "subfield": 1, "field": 1, "domain": 1})
-    if topic is None:
-        topic = {"id": topic_pred['topic_id'], "display_name": "Unknown",
-                 "subfield": "Unknown", "field": "Unknown", "domain": "Unknown"}
-        print("WARNING: Topic not found predicted in inference",
-              topic_url, topic_pred)
+
+def load_openalex_topics(col_oa):
+    """Load OpenAlex topic metadata once instead of querying it per prediction."""
+    projection = {
+        "_id": 0,
+        "id": 1,
+        "display_name": 1,
+        "subfield": 1,
+        "field": 1,
+        "domain": 1,
+    }
+    return {
+        topic["id"]: topic
+        for topic in col_oa.find({}, projection)
+        if topic.get("id")
+    }
+
+
+def get_openalex_topic(topic_cache, topic_pred):
+    """Resolve predicted topic metadata from the in-memory OpenAlex cache."""
+    topic_url = type_url_base + str(topic_pred["topic_id"])
+    cached = topic_cache.get(topic_url)
+    if cached is None:
+        topic = {
+            "id": topic_url,
+            "display_name": "Unknown",
+            "subfield": "Unknown",
+            "field": "Unknown",
+            "domain": "Unknown",
+        }
+        print(
+            "WARNING: Topic not found predicted in inference",
+            topic_url,
+            topic_pred)
+    else:
+        # Each prediction has its own score; never mutate the shared cache.
+        topic = dict(cached)
     topic["score"] = topic_pred["topic_score"]
     return topic
 
 
-def process_topic(col, col_oa, work, inference_endpoint="http://localhost:8080/invocations"):
-    """
-    Process the topic inference for a given work and retrieve the topics from OpenAlex.
-    The work is updated with the primary topic and the list of topics.
+def _topic_update(work, predictions, topic_cache):
+    if not isinstance(predictions, list):
+        return None
 
-    Parameters
-    ----------
-    col : pymongo.collection.Collection
-        Collection of the works (kahi database)
-    col_oa : pymongo.collection.Collection
-        Collection of OpenAlex topics
-    work : dict
-        Work to process
-    inference_endpoint : str, optional
-        Endpoint of the inference service, by default "http://localhost:8080/invocations"
-    """
-    title = work["titles"][0]["title"]
-    if len(work["abstracts"]) == 0:
-        return
-    abstract = work["abstracts"][0]["abstract"]
-    journal_name = work["source"]["name"] if work["source"] != {} else ""
-    req = request_topic_inference(
-        title, abstract, journal_name, inference_endpoint)
-    if req.status_code == 200:
-        topics_ids_pred = req.json()
+    current_topics = list(work.get("topics") or [])
+    current_ids = {topic.get("id") for topic in current_topics}
+    primary_topic = work.get("primary_topic") or {}
+    for topic_pred in predictions:
+        if (
+            not isinstance(topic_pred, dict)
+            or topic_pred.get("topic_id") in (None, -1)
+            or "topic_score" not in topic_pred
+        ):
+            continue
+        topic = get_openalex_topic(topic_cache, topic_pred)
+        if not primary_topic:
+            primary_topic = topic
+        if topic.get("id") not in current_ids:
+            current_topics.append(topic)
+            current_ids.add(topic.get("id"))
 
-        for topic_pred in topics_ids_pred[0]:
-            topic = get_openalex_topic(col_oa, topic_pred)
+    if not primary_topic:
+        return None
+    return UpdateOne(
+        {"_id": work["_id"], "primary_topic": {}},
+        {"$set": {"primary_topic": primary_topic, "topics": current_topics}},
+    )
 
-            if work["primary_topic"] == {}:
-                work["primary_topic"] = topic
-            work["topics"].append(topic)
-        col.update_one({"_id": work["_id"]}, {
-                       "$set": {"primary_topic": work["primary_topic"], "topics": work["topics"]}})
-    else:
+
+def process_topic_batch(
+    col,
+    topic_cache,
+    works,
+    inference_endpoint="http://localhost:8080/invocations",
+    timeout=300,
+    retries=3,
+):
+    """Infer and persist topics for a batch of works using one HTTP request/write."""
+    valid = []
+    payload = []
+    for work in works:
+        item = _topic_payload(work)
+        if item is not None:
+            valid.append(work)
+            payload.append(item)
+    if not payload:
+        return 0
+
+    response = None
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            response = request_topic_inference_batch(
+                payload, inference_endpoint, timeout
+            )
+            if response.status_code == 200:
+                break
+            last_error = RuntimeError(
+                f"topic inference returned HTTP {response.status_code}: "
+                f"{response.text[:300]}"
+            )
+        except requests.RequestException as error:
+            last_error = error
+        if attempt < retries:
+            print(
+                f"WARNING: Topic batch inference attempt {attempt}/{retries} "
+                "failed; retrying"
+            )
+            sleep(attempt)
+    if response is None or response.status_code != 200:
+        raise RuntimeError(
+            f"Topic batch inference failed after {retries} attempts"
+        ) from last_error
+    try:
+        predictions = response.json()
+    except ValueError as error:
+        print(f"ERROR: Invalid topic batch inference response: {error}")
+        return 0
+    if not isinstance(predictions, list) or len(predictions) != len(valid):
         print(
-            f"ERROR: request for inference fails status code {req.status_code}\n", work)
+            "ERROR: Topic batch inference response size mismatch: "
+            f"expected {len(valid)}, got "
+            f"{len(predictions) if isinstance(predictions, list) else 'invalid'}"
+        )
+        return 0
+
+    operations = []
+    for work, work_predictions in zip(valid, predictions):
+        operation = _topic_update(work, work_predictions, topic_cache)
+        if operation is not None:
+            operations.append(operation)
+    if not operations:
+        return 0
+    result = col.bulk_write(operations, ordered=False)
+    return result.modified_count
+
+
+def process_topic(
+    col,
+    col_oa,
+    work,
+    inference_endpoint="http://localhost:8080/invocations",
+    timeout=300,
+):
+    """Backward-compatible wrapper for processing a single work."""
+    topic_cache = load_openalex_topics(col_oa)
+    return bool(
+        process_topic_batch(
+            col, topic_cache, [work], inference_endpoint, timeout
+        )
+    )

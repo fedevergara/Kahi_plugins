@@ -18,11 +18,12 @@ def parse_minciencias_opendata(reg, empty_work, verbose=0):
     """
     entry = empty_work.copy()
     entry["updated"] = [{"source": "minciencias", "time": int(time())}]
-    if 'nme_producto_pd' in reg.keys():
-        if reg["nme_producto_pd"]:
-            lang = lang_poll(reg["nme_producto_pd"], verbose=verbose)
+    title = reg.get("nme_producto_pd")
+    if not isinstance(title, str) or not title.strip():
+        return None
+    lang = lang_poll(title, verbose=verbose)
     entry["titles"].append(
-        {"title": reg["nme_producto_pd"], "lang": lang, "source": "minciencias"})
+        {"title": title.strip(), "lang": lang, "source": "minciencias"})
     if "id_producto_pd" in reg.keys():
         if reg["id_producto_pd"]:
             entry["external_ids"].append(
@@ -37,29 +38,33 @@ def parse_minciencias_opendata(reg, empty_work, verbose=0):
                 if COD_RH and COD_PRODUCTO:
                     entry["external_ids"].append(
                         {"provenance": "minciencias", "source": "scienti", "id": {"COD_RH": COD_RH, "COD_PRODUCTO": COD_PRODUCTO}})
-    date = ""
-    if "ano_convo" in reg.keys():
-        if reg["ano_convo"]:
-            date = check_date_format(reg["ano_convo"])
-
-    if "id_tipo_pd_med" in reg.keys():
-        if reg["id_tipo_pd_med"]:
-            entry["ranking"].append(
-                {"provenance": "minciencias", "date": date, "rank": reg["id_tipo_pd_med"], "source": "minciencias"})
-    if "nme_tipo_medicion_pd" in reg.keys():
-        if reg["nme_tipo_medicion_pd"]:
-            entry["ranking"].append(
-                {"provenance": "minciencias", "date": date, "rank": reg["nme_tipo_medicion_pd"], "level": 0, "source": "minciencias"})
-    if "nme_categoria_pd" in reg.keys():
-        if reg["nme_categoria_pd"]:
-            entry["ranking"].append(
-                {"provenance": "minciencias", "date": date, "rank": reg["nme_categoria_pd"], "level": 1, "source": "minciencias"})
+    ranking_history = reg.get("_ranking_history") or [reg]
+    for ranking_reg in ranking_history:
+        date = check_date_format(ranking_reg.get("ano_convo")) if ranking_reg.get("ano_convo") else ""
+        ranking_fields = [
+            ("id_tipo_pd_med", None),
+            ("nme_tipo_medicion_pd", 0),
+            ("nme_categoria_pd", 1),
+        ]
+        for field, level in ranking_fields:
+            if not ranking_reg.get(field):
+                continue
+            rank = {
+                "provenance": "minciencias",
+                "date": date,
+                "rank": ranking_reg[field],
+                "source": "minciencias",
+            }
+            if level is not None:
+                rank["level"] = level
+            if rank not in entry["ranking"]:
+                entry["ranking"].append(rank)
 
     if "nme_tipologia_pd" in reg.keys():
         if reg["nme_tipologia_pd"]:
             typ = reg["nme_tipologia_pd"]
             entry["types"].append(
-                {"provenance": "minciencias", "source": "minciencias", "type": typ, "level": 1, "parent": reg["nme_clase_pd"]})
+                {"provenance": "minciencias", "source": "minciencias", "type": typ, "level": 1, "parent": reg.get("nme_clase_pd")})
     if "nme_clase_pd" in reg.keys():
         if reg["nme_clase_pd"]:
             typ = reg["nme_clase_pd"]
@@ -67,16 +72,13 @@ def parse_minciencias_opendata(reg, empty_work, verbose=0):
                 {"provenance": "minciencias", "source": "minciencias", "type": typ, "level": 0, "parent": None
                  })
 
-    if 'id_persona_pd' in reg.keys():
-        if reg["id_persona_pd"]:
-            minciencias_id = reg["id_persona_pd"]
+    minciencias_id = reg.get("id_persona_pd")
+    if minciencias_id:
         affiliation = []
         group_name = ""
-        if "cod_grupo_gr" in reg.keys():
-            if reg["cod_grupo_gr"]:
-                if "nme_grupo_gr" in reg.keys():
-                    if reg["nme_grupo_gr"]:
-                        group_name = reg["nme_grupo_gr"]
+        if reg.get("cod_grupo_gr"):
+            if reg.get("nme_grupo_gr"):
+                group_name = reg["nme_grupo_gr"]
             affiliation.append(
                 {
                     "external_ids": [{"provenance": "minciencias", "source": "minciencias", "id": reg["cod_grupo_gr"]}],

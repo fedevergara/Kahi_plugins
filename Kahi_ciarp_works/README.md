@@ -4,7 +4,7 @@
 Kahi will use this plugin to insert or update the works information from ciarp office file from public universities.
 
 # Description
-Plugin that read the information from a file with papers published and reported to the ciarp office to update or insert the information of the research products in CoLav's database format.
+Plugin that reads papers published and reported to the CIARP office from MongoDB to update or insert the information of the research products in CoLav's database format.
 
 # Installation
 You could download the repository from github. Go into the folder where the setup.py is located and run
@@ -35,23 +35,15 @@ config:
   log_collection: log
 workflow:
   ciarp_works/doi:
-    databases:
-      - institution_id: https://ror.org/03bp5hc83 # Universidad de Antioquia
-        file_path: data_file_path
-      - institution_id: https://ror.org/00jb9vg53 # Universidad del Valle
-        file_path: data_file_path
+    database_url: localhost:27017
+    database_name: institutional_data
+    ciarp_collection_name: ciarp
     num_jobs: 1
     verbose: 4
   ciarp_works:
-    es_index: kahi_es
-    es_url: http://localhost:9200
-    es_user: elastic
-    es_password: colav
-    databases:
-      - institution_id: https://ror.org/03bp5hc83 # Universidad de Antioquia
-        file_path: data_file_path
-      - institution_id: https://ror.org/00jb9vg53 # Universidad del Valle
-        file_path: data_file_path
+    database_url: localhost:27017
+    database_name: institutional_data
+    ciarp_collection_name: ciarp
     num_jobs: 1
     verbose: 4
 ```

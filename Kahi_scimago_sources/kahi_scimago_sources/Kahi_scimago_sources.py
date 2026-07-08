@@ -71,6 +71,34 @@ class Kahi_scimago_sources(KahiBase):
                 issns.append(issn)
         return issns
 
+    def _sourceid_values(self, sjr):
+        sourceid = self._get_value(sjr, "Sourceid")
+        if sourceid is None or sourceid == "":
+            return []
+        values = [str(sourceid)]
+        try:
+            numeric = int(sourceid)
+        except (TypeError, ValueError):
+            numeric = None
+        if numeric is not None:
+            values.append(numeric)
+        return values
+
+    def _find_by_scimago_sourceid(self, sjr):
+        values = self._sourceid_values(sjr)
+        if not values:
+            return None
+        return self.collection.find_one(
+            {
+                "external_ids": {
+                    "$elemMatch": {
+                        "source": "scimago",
+                        "id": {"$in": values},
+                    }
+                }
+            }
+        )
+
     def parse_scimago_categories(self, raw: str):
         """
         Convert a raw scimago categories string into a list of dicts with
@@ -160,14 +188,16 @@ class Kahi_scimago_sources(KahiBase):
         if not found_scimago_name:
             entry["names"].append(
                 {"lang": "en", "name": self._get_value(sjr, "Title"), "source": "scimago"})
+        sourceid = str(self._get_value(sjr, "Sourceid"))
         found_scimagoid = False
         for ext in entry["external_ids"]:
-            if ext["source"] == "scimago":
+            if ext["source"] == "scimago" and str(ext.get("id")) == sourceid:
                 found_scimagoid = True
-                break
+            elif ext["source"] == "scimago":
+                ext["id"] = str(ext.get("id"))
         if not found_scimagoid:
             entry["external_ids"].append(
-                {"source": "scimago", "id": str(self._get_value(sjr, "Sourceid"))})
+                {"source": "scimago", "id": sourceid})
         found_scimago_type = False
         for typ in entry["types"]:
             if typ["source"] == "scimago":
@@ -264,20 +294,19 @@ class Kahi_scimago_sources(KahiBase):
     def process_scimago(self):
         for sjr in self.scimago:
             issn_list = self._get_value(sjr, "Issn")
-            db_found = False
-            db_reg = None
+            db_reg = self._find_by_scimago_sourceid(sjr)
             ext_ids = []
             found_issn = None
-            for issn in self._iter_issns(issn_list):
-                issn = issn.strip()
-                extid = issn[:4] + "-" + issn[4:]
-                db_reg = self.collection.find_one({"external_ids.id": extid})
-                if db_reg:
-                    found_issn = issn
-                    db_found = True
-                    break
-                ext_ids.append({"source": "issn", "id": extid})
-            if db_found:
+            if not db_reg:
+                for issn in self._iter_issns(issn_list):
+                    issn = issn.strip()
+                    extid = issn[:4] + "-" + issn[4:]
+                    db_reg = self.collection.find_one({"external_ids.id": extid})
+                    if db_reg:
+                        found_issn = issn
+                        break
+                    ext_ids.append({"source": "issn", "id": extid})
+            if db_reg:
                 self.already_in_db.append(found_issn)
                 self.update_scimago(sjr, db_reg)
             else:
@@ -287,7 +316,7 @@ class Kahi_scimago_sources(KahiBase):
                     {"source": "scimago", "type": self._get_value(sjr, "Type")})
                 entry["external_ids"] = ext_ids
                 entry["external_ids"].append(
-                    {"source": "scimago", "id": int(self._get_value(sjr, "Sourceid"))})
+                    {"source": "scimago", "id": str(self._get_value(sjr, "Sourceid"))})
                 entry["names"] = [
                     {"lang": "en", "name": self._get_value(sjr, "Title"), "source": "scimago"}]
                 country = None

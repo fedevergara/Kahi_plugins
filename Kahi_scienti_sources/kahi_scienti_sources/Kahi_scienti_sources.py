@@ -54,6 +54,8 @@ class Kahi_scienti_sources(KahiBase):
                     [("details.article.journal_others.TXT_ISSN", ASCENDING)])
                 collection.create_index(
                     [("details.article.journal.TXT_ISSN_SEP", ASCENDING)])
+                collection.create_index(
+                    [("details.article.journal.TXT_ISSN", ASCENDING)])
                 client.close()
 
     def _normalize_issn(self, value):

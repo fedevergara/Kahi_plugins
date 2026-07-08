@@ -8,27 +8,16 @@ def process_relation(sub, client, db_name):
     db = client[db_name]
     collection = db["subjects"]
     relations = []
-    for rel in sub["related_concepts"]:
+    relation_ids = set()
+    for rel in (sub.get("related_concepts") or []) + (sub.get("ancestors") or []):
+        if not rel or not rel.get("id"):
+            continue
         sub_db = collection.find_one(
             {"external_ids.id": rel["id"]})
         if sub_db:
-            name = sub_db["names"][0]["name"]
-            for n in sub_db["names"]:
-                if n["lang"] == "en":
-                    name = n["name"]
-                    break
-            rel_entry = {
-                "id": sub_db["_id"],
-                "name": name,
-                "level": sub_db["level"]
-            }
-            relations.append(rel_entry)
-        else:
-            print("Could not find related concept in colombia db")
-    for rel in sub["ancestors"]:
-        sub_db = collection.find_one(
-            {"external_ids.id": rel["id"]})
-        if sub_db:
+            if sub_db["_id"] in relation_ids:
+                continue
+            relation_ids.add(sub_db["_id"])
             name = sub_db["names"][0]["name"]
             for n in sub_db["names"]:
                 if n["lang"] == "en":
@@ -85,10 +74,10 @@ class Kahi_openalex_subjects(KahiBase):
         self.inserted_concepts_ids_tuples = []
 
         self.relations_inserted_ids = []
-        for reg in self.collection["subjects"].find():
+        for reg in self.collection.find():
             oa_id = ""
             for ext in reg["external_ids"]:
-                if ext["sources"] == "openalex":
+                if ext["source"] == "openalex":
                     oa_id = ext["id"]
                     break
             if oa_id != "":
@@ -117,29 +106,31 @@ class Kahi_openalex_subjects(KahiBase):
             entry["external_ids"].append(
                 {"source": "openalex", "id": sub["id"]})
             sources_inserted_ids.append("openalex")
-            for source, idx in sub["ids"].items():
+            for source, idx in (sub.get("ids") or {}).items():
                 if source in sources_inserted_ids:
+                    continue
+                if idx is None:
                     continue
                 entry["external_ids"].append({"source": source, "id": idx})
                 sources_inserted_ids.append(source)
-            entry["level"] = sub["level"]
+            entry["level"] = sub.get("level")
             entry["names"].append(
-                {"name": sub["display_name"], "lang": "en"})
+                {"name": sub.get("display_name"), "lang": "en"})
             inserted_lang_names = ["en"]
-            if sub["international"]:
-                if sub["international"]["display_name"]:
+            if sub.get("international"):
+                if sub["international"].get("display_name"):
                     for lang, name in sub["international"]["display_name"].items():
                         if lang in inserted_lang_names:
                             continue
                         entry["names"].append({"name": name, "lang": lang})
                         inserted_lang_names.append(lang)
-            if sub["description"]:
+            if sub.get("description"):
                 entry["descriptions"].append(
                     {"description": sub["description"], "lang": "en"})
-            if sub["wikidata"]:
+            if sub.get("wikidata"):
                 entry["external_urls"].append(
                     {"source": "wikidata", "url": sub["wikidata"]})
-            if sub["image_url"]:
+            if sub.get("image_url"):
                 entry["external_urls"].append(
                     {"source": "image", "url": sub["image_url"]})
 

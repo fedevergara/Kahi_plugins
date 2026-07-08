@@ -32,13 +32,26 @@ def parse_openalex(reg, empty_work, verbose=0):
             {"provenance": "openalex", "source": source, "id": idx})
     entry["doi"] = reg["doi"]
     entry["year_published"] = reg["publication_year"]
-    entry["date_published"] = int(dt.strptime(
-        reg["publication_date"], "%Y-%m-%d").timestamp())
-    entry["types"].append(
-        {"provenance": "openalex", "source": "openalex", "type": reg["type"], "level": None})
+    publication_date = reg.get("publication_date")
+    if publication_date:
+        try:
+            entry["date_published"] = int(dt.strptime(
+                publication_date, "%Y-%m-%d").timestamp())
+        except (TypeError, ValueError):
+            if verbose > 1:
+                print(
+                    f"WARNING: invalid publication_date {publication_date!r} "
+                    f"for work {reg.get('id')}"
+                )
+    entry["types"].append({"provenance": "openalex",
+                           "source": "openalex",
+                           "type": reg["type"],
+                           "level": None})
     if "type_crossref" in reg.keys():
-        entry["types"].append(
-            {"provenance": "openalex", "source": "crossref", "type": reg["type_crossref"], "level": None})
+        entry["types"].append({"provenance": "openalex",
+                               "source": "crossref",
+                               "type": reg["type_crossref"],
+                               "level": None})
 
     entry["citations_by_year"] = reg["counts_by_year"]
 
@@ -88,18 +101,24 @@ def parse_openalex(reg, empty_work, verbose=0):
                     {"provenance": "openalex", "source": "open_access", "url": reg["open_access"]["oa_url"]})
     if "apc_paid" in reg.keys():
         if reg["apc_paid"]:
-            entry["apc"]["paid"] = {"value": reg["apc_paid"]["value"], "currency": reg["apc_paid"]["currency"],
-                                    "value_usd": reg["apc_paid"]["value_usd"], "provenance": "openalex"}
+            entry["apc"]["paid"] = {
+                "value": reg["apc_paid"]["value"],
+                "currency": reg["apc_paid"]["currency"],
+                "value_usd": reg["apc_paid"]["value_usd"],
+                "provenance": "openalex"}
     if "apc_list" in reg.keys():
         if reg["apc_list"]:
-            entry["apc"]["list"] = {"value": reg["apc_list"]["value"], "currency": reg["apc_list"]["currency"],
-                                    "value_usd": reg["apc_list"]["value_usd"], "provenance": "openalex"}
+            entry["apc"]["list"] = {
+                "value": reg["apc_list"]["value"],
+                "currency": reg["apc_list"]["currency"],
+                "value_usd": reg["apc_list"]["value_usd"],
+                "provenance": "openalex"}
     if "abstract_inverted_index" in reg.keys():
         if reg["abstract_inverted_index"]:
             abstract = inverted_index_to_text(reg["abstract_inverted_index"])
             abstract_lang = lang_poll(abstract, verbose=verbose)
-            entry["abstracts"].append(
-                {"abstract": text_to_inverted_index(abstract), "lang": abstract_lang, "source": "openalex", 'provenance': 'openalex'})
+            entry["abstracts"].append({"abstract": text_to_inverted_index(
+                abstract), "lang": abstract_lang, "source": "openalex", 'provenance': 'openalex'})
 
     # authors section
     for author in reg["authorships"]:
@@ -118,14 +137,20 @@ def parse_openalex(reg, empty_work, verbose=0):
                 affs.append(aff_entry)
         author = author["author"]
         author_entry = {
-            "external_ids": [{"source": "openalex", "id": author["id"]}],
+            "external_ids": [],
             "full_name": author["display_name"],
             "types": [],
             "affiliations": affs
         }
-        if author["orcid"]:
+        if author["id"]:
             author_entry["external_ids"].append(
-                {"source": "orcid", "id": author["orcid"].replace("https://orcid.org/", "")})
+                {"source": "openalex", "id": author["id"]})
+        if author["orcid"]:
+            orcid = author["orcid"]
+            if not orcid.startswith("https://orcid.org/"):
+                orcid = f"https: //orcid.org/{orcid}"
+            author_entry["external_ids"].append(
+                {"source": "orcid", "id": orcid})
         entry["authors"].append(author_entry)
     # concepts section
     subjects = []

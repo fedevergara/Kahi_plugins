@@ -5,6 +5,83 @@ from unidecode import unidecode
 from time import time
 from bson import ObjectId
 from re import search, sub
+from threading import Lock
+
+
+_PRODUCT_LOCKS = tuple(Lock() for _ in range(1024))
+
+
+def _product_lock(product_id):
+    return _PRODUCT_LOCKS[hash(product_id) % len(_PRODUCT_LOCKS)]
+
+
+def run_es_operation(semaphore, operation, *args, **kwargs):
+    if semaphore is None:
+        return operation(*args, **kwargs)
+    with semaphore:
+        return operation(*args, **kwargs)
+
+
+def product_query(product_id):
+    return {
+        "external_ids": {
+            "$elemMatch": {"source": "minciencias", "id": product_id}
+        }
+    }
+
+
+def build_es_work(entry):
+    titles = entry.get("titles") or []
+    title = titles[0].get("title", "").strip() if titles else ""
+    if not title:
+        return None
+    bibliography = entry.get("bibliographic_info") or {}
+    return {
+        "title": title,
+        "source": (entry.get("source") or {}).get("name", ""),
+        "year": entry.get("year_published") or "0",
+        "volume": bibliography.get("volume", ""),
+        "issue": bibliography.get("issue", ""),
+        "first_page": bibliography.get("start_page", ""),
+        "last_page": bibliography.get("end_page", ""),
+        "authors": [
+            author.get("full_name", "")
+            for author in entry.get("authors", [])[:5]
+            if author.get("full_name")
+        ],
+        "provenance": "minciencias",
+    }
+
+
+def ensure_es_work(entry, work_id, es_handler, es_semaphore=None):
+    if not es_handler or work_id is None:
+        return
+    work = build_es_work(entry)
+    if work is None:
+        return
+    es_client = getattr(es_handler, "es", None)
+    es_index = getattr(es_handler, "es_index", None)
+    exists = False
+    if es_client is not None and es_index:
+        exists = run_es_operation(
+            es_semaphore, es_client.exists, index=es_index, id=str(work_id)
+        )
+    if not exists:
+        run_es_operation(
+            es_semaphore, es_handler.insert_work, _id=str(work_id), work=work
+        )
+
+
+def find_work_by_es_id(collection, value):
+    if value is None:
+        return None
+    found = collection.find_one({"_id": value})
+    if found:
+        return found
+    try:
+        return collection.find_one({"_id": ObjectId(value)})
+    except Exception:
+        return None
 
 
 def get_units_affiations(db, author_db, affiliations):
@@ -54,7 +131,13 @@ def get_units_affiations(db, author_db, affiliations):
     return units
 
 
-def process_one_update(openadata_reg, colav_reg, db, collection, empty_work, verbose=0):
+def process_one_update(
+        openadata_reg,
+        colav_reg,
+        db,
+        collection,
+        empty_work,
+        verbose=0):
     """
     Method to update a register in the kahi database from minciencias opendata database if it is found.
     This means that the register is already on the kahi database and it is being updated with new information.
@@ -78,11 +161,15 @@ def process_one_update(openadata_reg, colav_reg, db, collection, empty_work, ver
     entry = parse_minciencias_opendata(
         openadata_reg, empty_work.copy(), verbose=verbose)
     # updated
-    for upd in colav_reg["updated"]:
-        if upd["source"] == "minciencias":
-            return None  # Register already on db
-    colav_reg["updated"].append(
-        {"source": "minciencias", "time": int(time())})
+    minciencias_update = next(
+        (upd for upd in colav_reg["updated"] if upd["source"] == "minciencias"),
+        None,
+    )
+    if minciencias_update:
+        minciencias_update["time"] = int(time())
+    else:
+        colav_reg["updated"].append(
+            {"source": "minciencias", "time": int(time())})
     # titles
     if 'minciencias' not in [title['source'] for title in colav_reg["titles"]]:
         lang = entry["titles"][0]["lang"]
@@ -107,7 +194,8 @@ def process_one_update(openadata_reg, colav_reg, db, collection, empty_work, ver
     author_db = None
     if minciencias_author:
         author_found = False
-        if "external_ids" in minciencias_author.keys() and minciencias_author["affiliations"]:
+        if "external_ids" in minciencias_author.keys(
+        ) and minciencias_author["affiliations"]:
             for ext in minciencias_author["external_ids"]:
                 author_db = db["person"].find_one(
                     {"external_ids.id": ext["id"]})
@@ -125,8 +213,8 @@ def process_one_update(openadata_reg, colav_reg, db, collection, empty_work, ver
                             if author_db["_id"] != author["id"]:
                                 continue
                             # Adding group to existing author in colav register
-                            author_affiliations = [str(aff['id'])
-                                                   for aff in author['affiliations']]
+                            author_affiliations = [
+                                str(aff['id']) for aff in author['affiliations']]
                             if str(group_db["_id"]) not in author_affiliations:
                                 author["affiliations"].append(
                                     {
@@ -152,23 +240,28 @@ def process_one_update(openadata_reg, colav_reg, db, collection, empty_work, ver
                                         print(
                                             f"WARNING: author with id '' found in colav register: {author}")
                                     continue
-                                # only the name can be compared, because we dont have the affiliation of the author from the paper in author_others
+                                # only the name can be compared, because we
+                                # dont have the affiliation of the author from
+                                # the paper in author_others
                                 author_reg = db['person'].find_one(
-                                    # this is required to get  first_names and last_names
+                                    # this is required to get  first_names and
+                                    # last_names
                                     {'_id': author['id']}, {"_id": 1, "full_name": 1, "first_names": 1, "last_names": 1, "initials": 1})
 
                                 name_match = compare_author(
                                     author_reg, author_db, len(colav_reg["authors"]))
-                                # If the author matches, replace the id and full_name of the record in process so as not to break the aggregation of affiliations.
+                                # If the author matches, replace the id and
+                                # full_name of the record in process so as not
+                                # to break the aggregation of affiliations.
                                 if name_match:
                                     author["id"] = author_db["_id"]
                                     author["full_name"] = author_db["full_name"]
 
                                 if author['affiliations']:
-                                    affiliations_person = [str(aff['id'])
-                                                           for aff in author_db['affiliations']]
-                                    author_affiliations = [str(aff['id'])
-                                                           for aff in author['affiliations']]
+                                    affiliations_person = [
+                                        str(aff['id']) for aff in author_db['affiliations']]
+                                    author_affiliations = [
+                                        str(aff['id']) for aff in author['affiliations']]
                                     affiliation_match = any(
                                         affil in author_affiliations for affil in affiliations_person)
                                 if name_match and affiliation_match:
@@ -199,7 +292,8 @@ def process_one_update(openadata_reg, colav_reg, db, collection, empty_work, ver
     # Adding advisor type to author if the work is a thesis
     if author_db:
         for type in entry["types"]:
-            if type["level"] == 1 and type["type"] in ["Tesis de pregrado", "Tesis de maestria", "Tesis de doctorado"]:
+            if type["level"] == 1 and type["type"] in [
+                    "Tesis de pregrado", "Tesis de maestria", "Tesis de doctorado"]:
                 for author in colav_reg["authors"]:
                     if author["id"] == author_db["_id"]:
                         author["type"] = "advisor"
@@ -224,10 +318,14 @@ def process_one_update(openadata_reg, colav_reg, db, collection, empty_work, ver
 
         # Adding group relation affiliation to the author affiliations
         relations = rgroup.get("relations", [])
-        # Counting education type relations, if there is only one, it will be added to the author
-        edu_count = sum(1 for rel in relations if any((t.get("type") or "") == "Education" for t in rel.get("types", [])))
+        # Counting education type relations, if there is only one, it will be
+        # added to the author
+        edu_count = sum(
+            1 for rel in relations if any(
+                (t.get("type") or "") == "Education" for t in rel.get(
+                    "types", [])))
 
-        if author_db and rgroup["relations"] and edu_count == 1:
+        if author_db and rgroup.get("relations") and edu_count == 1:
             for author in colav_reg["authors"]:
                 if author["id"] == author_db["_id"]:
                     affs = [aff["id"] for aff in author["affiliations"]]
@@ -261,7 +359,8 @@ def process_one_update(openadata_reg, colav_reg, db, collection, empty_work, ver
     )
 
 
-def process_one_insert(openadata_reg, db, collection, empty_work, es_handler, verbose=0):
+def process_one_insert(openadata_reg, db, collection, empty_work, es_handler,
+                       verbose=0, es_semaphore=None):
     """
     Function to insert a new register in the database if it is not found in the colav(kahi works) database.
     This means that the register is not on the database and it is being inserted.
@@ -289,8 +388,11 @@ def process_one_insert(openadata_reg, db, collection, empty_work, es_handler, ve
     """
     # parse
     entry = parse_minciencias_opendata(openadata_reg, empty_work.copy())
+    if entry is None:
+        return
     # authors
     minciencias_author = ""
+    author_db = None
     if "authors" in entry.keys():
         if entry["authors"]:
             minciencias_author = entry["authors"][0]
@@ -305,7 +407,8 @@ def process_one_insert(openadata_reg, db, collection, empty_work, es_handler, ve
                     entry["authors"][0]["full_name"] = author_db["full_name"]
                     # Adding advisor type to author if the work is a thesis
                     for type in entry["types"]:
-                        if type["level"] == 1 and type["type"] in ["Tesis de pregrado", "Tesis de maestria", "Tesis de doctorado"]:
+                        if type["level"] == 1 and type["type"] in [
+                                "Tesis de pregrado", "Tesis de maestria", "Tesis de doctorado"]:
                             entry["authors"][0]["type"] = "advisor"
                             break
                     # Adding affiliations to author
@@ -320,32 +423,33 @@ def process_one_insert(openadata_reg, db, collection, empty_work, es_handler, ve
                                     {
                                         "id": affiliations_db["_id"] if affiliations_db else None,
                                         "name": affiliations_db["names"][0]["name"].strip() if affiliations_db else None,
-                                        "types": affiliations_db["types"] if affiliations_db else None
-                                    }
-                                )
-                                if len(entry['authors'][0]["affiliations"]) > 1:
+                                        "types": affiliations_db["types"] if affiliations_db else None})
+                                if len(
+                                        entry['authors'][0]["affiliations"]) > 1:
                                     entry['authors'][0]["affiliations"].pop(0)
                                 if verbose > 4:
-                                    print("group added to author: {}".format(
-                                        affiliations_db["names"][0]["name"] if affiliations_db else None))
+                                    print(
+                                        "group added to author: {}".format(
+                                            affiliations_db["names"][0]["name"] if affiliations_db else None))
                                 break
                         else:
                             print(
-                                f"WARNING: group {group_id} not found in affiliation db")
+                                f"WARNING: group {group_id} found not in affiliation db")
             del entry["authors"][0]["external_ids"]
 
         else:
             if verbose > 4:
                 print("No author data")
-    if entry["authors"][0]["full_name"] == "":
+    if entry.get("authors") and entry["authors"][0].get("full_name") == "":
         del entry["authors"][0]  # this is an empty author, so it is removed
 
     # authors count
     entry["author_count"] = len(entry["authors"])
 
     # group
-    group_id = openadata_reg["cod_grupo_gr"]
-    rgroup = db["affiliations"].find_one({"external_ids.id": group_id})
+    group_id = openadata_reg.get("cod_grupo_gr")
+    rgroup = (db["affiliations"].find_one({"external_ids.id": group_id})
+              if group_id else None)
     if rgroup:
         found = False
         for group in entry["groups"]:
@@ -357,7 +461,7 @@ def process_one_insert(openadata_reg, db, collection, empty_work, es_handler, ve
                 {"id": rgroup["_id"], "name": rgroup["names"][0]["name"]})
 
         # Adding group relation affiliation to the author affiliations
-        if author_db and rgroup["relations"]:
+        if author_db and rgroup.get("relations"):
             for author in entry["authors"]:
                 if author["id"] == author_db["_id"]:
                     affs = [aff["id"] for aff in author["affiliations"]]
@@ -375,32 +479,21 @@ def process_one_insert(openadata_reg, db, collection, empty_work, es_handler, ve
                         if aff_unit not in author["affiliations"]:
                             author["affiliations"].append(aff_unit)
                     break
-    # insert in mongo
-    response = collection.insert_one(entry)
-    # insert in elasticsearch
-    authors = []
-    if es_handler:
-        work = {}
-        work["title"] = entry["titles"][0]["title"]
-        work["source"] = ""
-        work["year"] = "0"
-        work["volume"] = ""
-        work["issue"] = ""
-        work["first_page"] = ""
-        work["last_page"] = ""
-        for author in entry['authors']:
-            if "full_name" in author.keys():
-                if author["full_name"]:
-                    authors.append(author["full_name"])
-        work["authors"] = authors
-        if work["title"]:
-            es_handler.insert_work(_id=str(response.inserted_id), work=work)
-        else:
-            if verbose > 4:
-                print("Not enough data for insert in elasticsearch index")
+    product_id = openadata_reg.get("id_producto_pd")
+    if product_id:
+        with _product_lock(product_id):
+            response = collection.update_one(
+                product_query(product_id), {"$setOnInsert": entry}, upsert=True
+            )
+            work_id = response.upserted_id
+            if work_id is None:
+                existing = collection.find_one(
+                    product_query(product_id), {"_id": 1})
+                work_id = existing.get("_id") if existing else None
     else:
-        if verbose > 4:
-            print("No elasticsearch index provided")
+        response = collection.insert_one(entry)
+        work_id = response.inserted_id
+    ensure_es_work(entry, work_id, es_handler, es_semaphore)
 
 
 def str_normilize(word):
@@ -433,7 +526,8 @@ def check_work(title_work, authors, response, thresholds):
     return False
 
 
-def process_one(openadata_reg, db, collection, empty_work, es_handler, insert_all, thresholds, verbose=0):
+def process_one(openadata_reg, db, collection, empty_work, es_handler,
+                insert_all, thresholds, verbose=0, es_semaphore=None):
     """
     Function to process a single register from the minciencias opendata database.
     This function is used to insert or update a register in the colav(kahi works) database.
@@ -457,6 +551,9 @@ def process_one(openadata_reg, db, collection, empty_work, es_handler, insert_al
     verbose : int, optional
         Verbosity level. The default is 0.
     """
+    title = openadata_reg.get("nme_producto_pd")
+    if not isinstance(title, str) or not title.strip():
+        return
     # type id verification
     if "id_producto_pd" in openadata_reg.keys():
         if openadata_reg["id_producto_pd"]:
@@ -469,19 +566,25 @@ def process_one(openadata_reg, db, collection, empty_work, es_handler, insert_al
                 COD_PROD = match.group(2)
 
                 if COD_RH and COD_PROD:
-                    colav_reg = collection.find_one(
-                        {"external_ids.id": {"COD_RH": COD_RH, "COD_PRODUCTO": COD_PROD}})
+                    colav_reg = collection.find_one({"$or": [
+                        product_query(product_id),
+                        {"external_ids.id": {"COD_RH": COD_RH, "COD_PRODUCTO": COD_PROD}},
+                    ]})
                     if colav_reg:
                         process_one_update(
                             openadata_reg, colav_reg, db, collection, empty_work, verbose)
+                        ensure_es_work(colav_reg, colav_reg["_id"], es_handler,
+                                       es_semaphore)
                         return
 
     # elasticsearch section
     if es_handler:
         # Search in elasticsearch
         if thresholds and len(thresholds) == 3:
-            thresholds = {"author_thd": thresholds[0],
-                          "paper_thd_low": thresholds[1], "paper_thd_high": thresholds[2]}
+            thresholds = {
+                "author_thd": thresholds[0],
+                "paper_thd_low": thresholds[1],
+                "paper_thd_high": thresholds[2]}
         else:
             if verbose > 4:
                 print("Invalid thresholds values provided, using default values")
@@ -502,79 +605,86 @@ def process_one(openadata_reg, db, collection, empty_work, es_handler, insert_al
                     authors.append(author_db["full_name"])
 
         if authors and title_work != "":
-            responses = es_handler.search_work(
-                title=title_work,
-                source="",
-                year="0",
-                authors=authors,
-                volume="",
-                issue="",
-                page_start="",
-                page_end="",
-                use_es_thold=True,
-                es_thold=0,
-                hits=20
-            )
+            responses = run_es_operation(es_semaphore, es_handler.search_work,
+                                         title=title_work,
+                                         source="",
+                                         year="0",
+                                         authors=authors,
+                                         volume="",
+                                         issue="",
+                                         page_start="",
+                                         page_end="",
+                                         use_es_thold=True,
+                                         es_thold=0,
+                                         hits=20
+                                         )
             if responses:
                 for response in responses:
                     out = check_work(title_work, authors, response, thresholds)
                     if out:
-                        colav_reg = collection.find_one(
-                            {"_id": ObjectId(response["_id"])})
+                        colav_reg = find_work_by_es_id(
+                            collection, response.get("_id"))
                         if colav_reg:
                             process_one_update(
                                 openadata_reg, colav_reg, db, collection, empty_work, verbose)
                             return
                         else:
                             if verbose > 4:
-                                print("Register with {} not found in mongodb".format(
-                                    response["_id"]))
+                                print(
+                                    "Register with {} not found in mongodb".format(
+                                        response["_id"]))
                             return
-                # Work not found
-                if insert_all:
-                    process_one_insert(
-                        openadata_reg, db, collection, empty_work, es_handler, verbose)
+            # No matching work, including the case where Elasticsearch returned
+            # no hits.
+            if insert_all:
+                process_one_insert(
+                    openadata_reg, db, collection, empty_work, es_handler,
+                    verbose, es_semaphore)
 
         elif title_work:
             # No authors
             title = sub('[_|,\\\\]', '', title_work).lower()
-            es_results = es_handler.search_work(
-                title=title,
-                source="",
-                year="0",
-                authors=[],
-                volume="",
-                issue="",
-                page_start="",
-                page_end="",
-                use_es_thold=True,
-                es_thold=0,
-                hits=20
-            )
+            es_results = run_es_operation(es_semaphore, es_handler.search_work,
+                                          title=title,
+                                          source="",
+                                          year="0",
+                                          authors=[],
+                                          volume="",
+                                          issue="",
+                                          page_start="",
+                                          page_end="",
+                                          use_es_thold=True,
+                                          es_thold=0,
+                                          hits=20
+                                          )
             if es_results:
                 for es_work in es_results:
-                    colav_reg = collection.find_one(
-                        {"_id": ObjectId(es_work["_id"])})
+                    colav_reg = find_work_by_es_id(
+                        collection, es_work.get("_id"))
                     if colav_reg:
                         titles = [titles.get('title')
-                                  for titles in colav_reg["titles"]]
-                        display_name, score = process.extractOne(
-                            title_work, titles)
-                        if score > thresholds["paper_thd_high"]:
+                                  for titles in colav_reg.get("titles", [])
+                                  if titles.get("title")]
+                        match = process.extractOne(
+                            title_work, titles) if titles else None
+                        if match and match[1] > thresholds["paper_thd_high"]:
                             process_one_update(
                                 openadata_reg, colav_reg, db, collection, empty_work, verbose)
                             return
                     else:
                         if verbose > 4:
-                            print("Register with {} not found in mongodb".format(
-                                response["_id"]))
+                            print(
+                                "Register with {} not found in mongodb".format(
+                                    es_work.get("_id")))
                         return
 
             if insert_all:
                 process_one_insert(
-                    openadata_reg, db, collection, empty_work, es_handler, verbose)
+                    openadata_reg, db, collection, empty_work, es_handler,
+                    verbose, es_semaphore)
     else:
         process_one_insert(
-            openadata_reg, db, collection, empty_work, es_handler, verbose)
+            openadata_reg, db, collection, empty_work, es_handler,
+            verbose, es_semaphore)
         if verbose > 4:
             print("No elasticsearch index provided")

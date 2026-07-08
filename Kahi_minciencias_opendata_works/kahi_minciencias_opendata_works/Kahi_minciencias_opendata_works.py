@@ -3,7 +3,9 @@ from pymongo import MongoClient, TEXT
 from pymongo.errors import ConnectionFailure
 from joblib import Parallel, delayed
 from kahi_minciencias_opendata_works.process_one import process_one
+from kahi_minciencias_opendata_works.related_works import process_person_related_works
 from mohan.Similarity import Similarity
+from threading import BoundedSemaphore
 
 
 class Kahi_minciencias_opendata_works(KahiBase):
@@ -68,10 +70,26 @@ class Kahi_minciencias_opendata_works(KahiBase):
         ) else False
         self.thresholds = config["minciencias_opendata_works"]["thresholds"] if "thresholds" in config["minciencias_opendata_works"].keys(
         ) else None
+        self.include_person_related_works = config["minciencias_opendata_works"].get(
+            "person_related_works", False
+        )
+        self.person_collection_name = config["minciencias_opendata_works"].get(
+            "person_collection", "person"
+        )
         self.n_jobs = config["minciencias_opendata_works"]["num_jobs"] if "num_jobs" in config["minciencias_opendata_works"].keys(
         ) else 1
         self.verbose = config["minciencias_opendata_works"]["verbose"] if "verbose" in config["minciencias_opendata_works"].keys(
         ) else 0
+        self.es_semaphore = None
+        if self.es_handler is not None:
+            es_max_concurrency = config["minciencias_opendata_works"].get(
+                "es_max_concurrency", 8
+            )
+            if es_max_concurrency < 1:
+                raise ValueError(
+                    "minciencias_opendata_works.es_max_concurrency must be greater than zero"
+                )
+            self.es_semaphore = BoundedSemaphore(es_max_concurrency)
 
         # checking if the databases and collections are available
         self.check_databases_and_collections()
@@ -112,39 +130,71 @@ class Kahi_minciencias_opendata_works(KahiBase):
         print("INFO: Creating indices")
         opendata.create_index("id_producto_pd")
         opendata.create_index("nme_tipologia_pd")
-        if self.task == "doi":
-            raise RuntimeError(
-                f'''{self.config["minciencias_opendata_works"]["task"]} is not a valid task for the minciencias_opendata database''')
-
         exclude = ["Evento científico", "Eventos artísticos, de arquitectura o de diseño con componentes de apropiación", "Eventos artísticos",
                    "Patente de invención", "Patente modelo de utilidad",
                    "Proyecto ID+I con Formación", "Proyecto de Investigacion y Desarrollo", "Proyecto de Investigación y Creación",
                    "Proyecto de extensión", "Proyecto de extensión y responsabilidad social en CTI"]
 
         pipeline = [
-            {'$match': {"nme_producto_pd": {"$exists": True}}},
+            {'$match': {"nme_producto_pd": {"$type": "string", "$ne": ""}}},
             {'$match': {'nme_tipologia_pd': {'$nin': exclude}}},
-            {'$group': {'_id': '$id_producto_pd', 'originalDoc': {'$first': '$$ROOT'}}},
+            {'$sort': {'ano_convo': -1}},
+            {'$group': {
+                '_id': '$id_producto_pd',
+                'originalDoc': {'$first': '$$ROOT'},
+                'rankingHistory': {'$push': {
+                    'ano_convo': '$ano_convo',
+                    'id_tipo_pd_med': '$id_tipo_pd_med',
+                    'nme_tipo_medicion_pd': '$nme_tipo_medicion_pd',
+                    'nme_categoria_pd': '$nme_categoria_pd'
+                }}
+            }},
+            {'$set': {'originalDoc._ranking_history': '$rankingHistory'}},
             {'$replaceRoot': {'newRoot': '$originalDoc'}}
         ]
-        paper_list = list(opendata.aggregate(pipeline, allowDiskUse=True))
-        print(
-            f"INFO: Processing  production {len(paper_list)} other than catgories {exclude}")
-        Parallel(
-            n_jobs=self.n_jobs,
-            verbose=self.verbose,
-            backend="threading")(
-            delayed(process_one)(
-                work,
-                self.db,
-                self.collection,
-                self.empty_work(),
-                self.es_handler,
+        paper_cursor = opendata.aggregate(
+            pipeline, allowDiskUse=True, batchSize=1000
+        )
+        print(f"INFO: Processing productions other than categories {exclude}")
+        try:
+            results = Parallel(
+                n_jobs=self.n_jobs,
+                verbose=self.verbose,
+                backend="threading",
+                pre_dispatch="2*n_jobs",
+                return_as="generator_unordered",
+            )(
+                delayed(process_one)(
+                    work,
+                    self.db,
+                    self.collection,
+                    self.empty_work(),
+                    self.es_handler,
+                    insert_all=self.insert_all,
+                    thresholds=self.thresholds,
+                    verbose=self.verbose,
+                    es_semaphore=self.es_semaphore,
+                ) for work in paper_cursor
+            )
+            for _ in results:
+                pass
+        finally:
+            paper_cursor.close()
+        if self.include_person_related_works:
+            person_collection = self.db[self.person_collection_name]
+            person_collection.create_index("related_works.source")
+            person_collection.create_index("related_works.id")
+            counters = process_person_related_works(
+                person_collection=person_collection,
+                works_collection=self.collection,
+                empty_work_factory=self.empty_work,
+                es_handler=self.es_handler,
                 insert_all=self.insert_all,
                 thresholds=self.thresholds,
-                verbose=self.verbose
-            ) for work in paper_list
-        )
+                es_semaphore=self.es_semaphore,
+            )
+            if self.verbose > 0:
+                print(f"INFO: person.related_works results: {counters}")
         client.close()
 
     def run(self):

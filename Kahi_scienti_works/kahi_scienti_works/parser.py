@@ -28,9 +28,10 @@ def parse_scienti(reg, empty_work, doi=None, verbose=0):
     if reg["TXT_RESUMEN_PROD"]:
         abstract = reg["TXT_RESUMEN_PROD"].replace("\x00", "")
         lang = lang_poll(abstract, verbose=verbose)
-        entry["abstracts"].append(
-            {"abstract": text_to_inverted_index(abstract), "lang": lang, "source": "scienti", 'provenance': 'scienti'})
-    ext_ids_reg = {"provenance": "scienti", "source": "scienti", "id": {"COD_RH": reg["COD_RH"], "COD_PRODUCTO": reg["COD_PRODUCTO"]}}
+        entry["abstracts"].append({"abstract": text_to_inverted_index(
+            abstract), "lang": lang, "source": "scienti", 'provenance': 'scienti'})
+    ext_ids_reg = {"provenance": "scienti", "source": "scienti", "id": {
+        "COD_RH": reg["COD_RH"], "COD_PRODUCTO": reg["COD_PRODUCTO"]}}
     if ext_ids_reg not in entry["external_ids"]:
         entry["external_ids"].append(ext_ids_reg)
     if doi:
@@ -46,14 +47,19 @@ def parse_scienti(reg, empty_work, doi=None, verbose=0):
                     entry["external_ids"].append(
                         {"provenance": "scienti", "source": "doi", "id": doi})
             else:
-                if "TXT_WEB_PRODUCTO" in reg.keys() and reg["TXT_WEB_PRODUCTO"] and "10." in reg["TXT_WEB_PRODUCTO"]:
+                if "TXT_WEB_PRODUCTO" in reg.keys(
+                ) and reg["TXT_WEB_PRODUCTO"] and "10." in reg["TXT_WEB_PRODUCTO"]:
                     doi = doi_processor(reg["TXT_WEB_PRODUCTO"])
                     if doi:
                         extracted_doi = re.compile(
                             r'10\.\d{4,9}/[-._;()/:A-Z0-9]+', re.IGNORECASE).match(doi)
                         if extracted_doi:
                             doi = extracted_doi.group(0)
-                            for keyword in ['abstract', 'homepage', 'tpmd200765', 'event_abstract']:
+                            for keyword in [
+                                'abstract',
+                                'homepage',
+                                'tpmd200765',
+                                    'event_abstract']:
                                 doi = doi.split(
                                     f'/{keyword}')[0] if keyword in doi else doi
                 if doi:
@@ -63,6 +69,8 @@ def parse_scienti(reg, empty_work, doi=None, verbose=0):
     if "TXT_WEB_PRODUCTO" in reg.keys():
         entry["external_urls"].append(
             {"provenance": "scienti", "source": "scienti", "url": reg["TXT_WEB_PRODUCTO"]})
+    year = None
+    month = None
     if "NRO_ANO_PRESENTA" in reg.keys():
         year = reg["NRO_ANO_PRESENTA"]
     if "NRO_MES_PRESENTA" in reg.keys():
@@ -74,7 +82,11 @@ def parse_scienti(reg, empty_work, doi=None, verbose=0):
             f'{month}-{year}')
         entry["year_published"] = int(year)
     if "SGL_CATEGORIA" in reg.keys() and reg["SGL_CATEGORIA"]:
-        ranking_reg = {"provenance": "scienti", "date": "", "rank": reg["SGL_CATEGORIA"], "source": "scienti"}
+        ranking_reg = {
+            "provenance": "scienti",
+            "date": "",
+            "rank": reg["SGL_CATEGORIA"],
+            "source": "scienti"}
         if ranking_reg not in entry["ranking"]:
             entry["ranking"].append(ranking_reg)
     # types section
@@ -97,7 +109,8 @@ def parse_scienti(reg, empty_work, doi=None, verbose=0):
             break
 
     # details only for articles
-    if "details" in reg.keys() and len(reg["details"]) > 0 and "article" in reg["details"][0].keys():
+    if "details" in reg.keys() and len(
+            reg["details"]) > 0 and "article" in reg["details"][0].keys():
         details = reg["details"][0]["article"][0]
         try:
             if "TXT_PAGINA_INICIAL" in details.keys():
@@ -105,7 +118,9 @@ def parse_scienti(reg, empty_work, doi=None, verbose=0):
         except Exception as e:
             if verbose > 4:
                 print(
-                    f'Error parsing start page on RH:{reg["COD_RH"]} and COD_PROD:{reg["COD_PRODUCTO"]}')
+                    f'Error parsing start page on RH: {
+                        reg["COD_RH"]} and COD_PROD: {
+                        reg["COD_PRODUCTO"]}')
                 print(e)
         try:
             if "TXT_PAGINA_FINAL" in details.keys():
@@ -113,7 +128,9 @@ def parse_scienti(reg, empty_work, doi=None, verbose=0):
         except Exception as e:
             if verbose > 4:
                 print(
-                    f'Error parsing end page on RH:{reg["COD_RH"]} and COD_PROD:{reg["COD_PRODUCTO"]}')
+                    f'Error parsing end page on RH: {
+                        reg["COD_RH"]} and COD_PROD: {
+                        reg["COD_PRODUCTO"]}')
                 print(e)
         try:
             if "TXT_VOLUMEN_REVISTA" in details.keys():
@@ -121,7 +138,9 @@ def parse_scienti(reg, empty_work, doi=None, verbose=0):
         except Exception as e:
             if verbose > 4:
                 print(
-                    f'Error parsing volume on RH:{reg["COD_RH"]} and COD_PROD:{reg["COD_PRODUCTO"]}')
+                    f'Error parsing volume on RH: {
+                        reg["COD_RH"]} and COD_PROD: {
+                        reg["COD_PRODUCTO"]}')
                 print(e)
         try:
             if "TXT_FASCICULO_REVISTA" in details.keys():
@@ -129,14 +148,17 @@ def parse_scienti(reg, empty_work, doi=None, verbose=0):
         except Exception as e:
             if verbose > 4:
                 print(
-                    f'Error parsing issue on RH:{reg["COD_RH"]} and COD_PROD:{reg["COD_PRODUCTO"]}')
+                    f'Error parsing issue on RH: {
+                        reg["COD_RH"]} and COD_PROD: {
+                        reg["COD_PRODUCTO"]}')
                 print(e)
     elif "details" in reg.keys() and len(reg["details"]) > 0 and "oriented_thesis" in reg["details"][0].keys():
         details = None
         details = reg["details"][0]["oriented_thesis"][0]
         if details and details["NRO_PAGINAS"]:
             entry["bibliographic_info"]["start_page"] = "1"
-            entry["bibliographic_info"]["end_page"] = str(details["NRO_PAGINAS"])
+            entry["bibliographic_info"]["end_page"] = str(
+                details["NRO_PAGINAS"])
 
         # source section
         source = {"external_ids": [], "title": ""}
@@ -181,18 +203,31 @@ def parse_scienti(reg, empty_work, doi=None, verbose=0):
     # external_ids are added to the author entry for searching purposes
     author = reg["author"][0]
     author_entry = {
-        "full_name": re.sub(r'\s+', ' ', author["TXT_TOTAL_NAMES"].strip()),
+        "full_name": re.sub(
+            r'\s+',
+            ' ',
+            author["TXT_TOTAL_NAMES"].strip()),
         "affiliations": affiliations,
-        "external_ids": [{"provenance": "scienti", "source": "scienti", "id": {"COD_RH": author["COD_RH"]}}]
-    }
+        "external_ids": [
+            {
+                "provenance": "scienti",
+                "source": "scienti",
+                "id": {
+                    "COD_RH": author["COD_RH"]}}]}
     if author["TPO_DOCUMENTO_IDENT"] == "P":
         author_entry["external_ids"].append(
             {"provenance": "scienti", "source": "Passport", "id": author["NRO_DOCUMENTO_IDENT"]})
     if author["TPO_DOCUMENTO_IDENT"] == "C":
         author_entry["external_ids"].append(
-            {"provenance": "scienti", "source": "Cédula de Ciudadanía", "id": author["NRO_DOCUMENTO_IDENT"]})
+            {
+                "provenance": "scienti",
+                "source": "Cédula de Ciudadanía",
+                "id": author["NRO_DOCUMENTO_IDENT"]})
     if author["TPO_DOCUMENTO_IDENT"] == "E":
         author_entry["external_ids"].append(
-            {"provenance": "scienti", "source": "Cédula de Extranjería", "id": author["NRO_DOCUMENTO_IDENT"]})
+            {
+                "provenance": "scienti",
+                "source": "Cédula de Extranjería",
+                "id": author["NRO_DOCUMENTO_IDENT"]})
     entry["authors"] = [author_entry]
     return entry

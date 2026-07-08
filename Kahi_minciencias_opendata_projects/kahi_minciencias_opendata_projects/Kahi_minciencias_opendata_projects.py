@@ -51,8 +51,9 @@ class Kahi_minciencias_opendata_projects(KahiBase):
             es_index = config["minciencias_opendata_projects"]["es_index"]
             es_url = config["minciencias_opendata_projects"]["es_url"]
             if config["minciencias_opendata_projects"]["es_user"] and config["minciencias_opendata_projects"]["es_password"]:
-                es_auth = (config["minciencias_opendata_projects"]["es_user"],
-                           config["minciencias_opendata_projects"]["es_password"])
+                es_auth = (
+                    config["minciencias_opendata_projects"]["es_user"],
+                    config["minciencias_opendata_projects"]["es_password"])
             else:
                 es_auth = None
             self.es_handler = Similarity(
@@ -114,33 +115,42 @@ class Kahi_minciencias_opendata_projects(KahiBase):
         opendata.create_index("id_producto_pd")
         opendata.create_index("nme_tipologia_pd")
 
-        projects = ["Proyecto ID+I con Formación", "Proyecto de Investigacion y Desarrollo", "Proyecto de Investigación y Creación",
-                    "Proyecto de extensión", "Proyecto de extensión y responsabilidad social en CTI"]
+        projects = [
+            "Proyecto ID+I con Formación",
+            "Proyecto de Investigacion y Desarrollo",
+            "Proyecto de Investigación y Creación",
+            "Proyecto de extensión",
+            "Proyecto de extensión y responsabilidad social en CTI"]
 
         pipeline = [
-            {'$match': {"nme_producto_pd": {"$exists": True}}},
+            {'$match': {"nme_producto_pd": {"$type": "string", "$ne": ""}}},
             {'$match': {'nme_tipologia_pd': {'$in': projects}}},
             {'$group': {'_id': '$id_producto_pd', 'originalDoc': {'$first': '$$ROOT'}}},
             {'$replaceRoot': {'newRoot': '$originalDoc'}}
         ]
-        project_list = list(opendata.aggregate(pipeline, allowDiskUse=True))
-        print(
-            f"INFO: Processing projects production {len(project_list)} catgories {projects}")
-        Parallel(
-            n_jobs=self.n_jobs,
-            verbose=self.verbose,
-            backend="threading")(
-            delayed(process_one)(
-                project,
-                self.db,
-                self.collection,
-                self.empty_project(),
-                None,  # ES not implemented yet
-                insert_all=self.insert_all,
-                thresholds=self.thresholds,
-                verbose=self.verbose
-            ) for project in project_list
-        )
+        cursor = opendata.aggregate(
+            pipeline, allowDiskUse=True, batchSize=1000)
+        print(f"INFO: Processing project categories {projects}")
+        try:
+            results = Parallel(
+                n_jobs=self.n_jobs,
+                verbose=self.verbose,
+                backend="threading",
+                pre_dispatch="2*n_jobs",
+                return_as="generator_unordered")(
+                delayed(process_one)(
+                    project,
+                    self.db,
+                    self.collection,
+                    self.empty_project(),
+                    None,
+                    insert_all=self.insert_all,
+                    thresholds=self.thresholds,
+                    verbose=self.verbose) for project in cursor)
+            for _ in results:
+                pass
+        finally:
+            cursor.close()
         client.close()
 
     def run(self):

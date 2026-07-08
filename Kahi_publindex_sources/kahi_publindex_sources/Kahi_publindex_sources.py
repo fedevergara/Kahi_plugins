@@ -18,6 +18,7 @@ class Kahi_publindex_sources(KahiBase):
         self.db = self.client[config["database_name"]]
         self.collection = self.db["sources"]
         self.collection.create_index("external_ids.id")
+        self.collection.create_index("names.name")
 
         source_cfg = config["publindex_sources"]
         self.publindex_client = MongoClient(source_cfg["database_url"])
@@ -195,6 +196,15 @@ class Kahi_publindex_sources(KahiBase):
                 return
         entry["external_ids"].append({"source": source, "id": identifier})
 
+    def _append_type(self, entry, source, source_type):
+        source_type = self._normalize_text(source_type)
+        if not source_type:
+            return
+        for rec in entry["types"]:
+            if rec.get("source") == source and rec.get("type") == source_type:
+                return
+        entry["types"].append({"source": source, "type": source_type})
+
     def _upsert_ranking(self, entry, rank_value, from_date, to_date, source="publindex"):
         rank_value = self._normalize_text(rank_value)
         if not rank_value:
@@ -361,6 +371,7 @@ class Kahi_publindex_sources(KahiBase):
         identity = self._extract_identity(reg)
 
         self._upsert_updated(entry, "publindex")
+        self._append_type(entry, "publindex", "journal")
         self._append_name(entry, identity["name"], "", "publindex")
         self._append_external_id(entry, "issn", identity["issn_p"])
         self._append_external_id(entry, "issn_l", identity["issn_l"])
@@ -389,6 +400,7 @@ class Kahi_publindex_sources(KahiBase):
         identity = self._extract_identity(reg)
 
         self._upsert_updated(entry, "publindex")
+        self._append_type(entry, "publindex", "journal")
         self._append_name(entry, identity["name"], "", "publindex")
         self._append_external_id(entry, "issn", identity["issn_p"])
         self._append_external_id(entry, "issn_l", identity["issn_l"])
@@ -426,6 +438,7 @@ class Kahi_publindex_sources(KahiBase):
         identity = self._extract_international_identity(reg)
 
         self._upsert_updated(entry, "publindex")
+        self._append_type(entry, "publindex", "journal")
         self._append_name(
             entry, identity["name"], "", "publindex")
         for issn in identity["issns"]:
@@ -448,6 +461,7 @@ class Kahi_publindex_sources(KahiBase):
         identity = self._extract_international_identity(reg)
 
         self._upsert_updated(entry, "publindex")
+        self._append_type(entry, "publindex", "journal")
         self._append_name(
             entry, identity["name"], "", "publindex")
         for issn in identity["issns"]:

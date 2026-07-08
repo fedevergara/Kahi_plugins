@@ -3,6 +3,93 @@ from kahi_impactu_utils.Utils import lang_poll, doi_processor, compare_author, s
 import re
 from time import time
 from bson import ObjectId
+from threading import Lock
+
+
+_INSERT_LOCKS = tuple(Lock() for _ in range(256))
+
+
+def run_es_operation(semaphore, operation, *args, **kwargs):
+    """Run one Elasticsearch operation within the shared pool limit."""
+    if semaphore is None:
+        return operation(*args, **kwargs)
+    with semaphore:
+        return operation(*args, **kwargs)
+
+
+def scienti_identity(entry):
+    """Return the stable COD_RH/COD_PRODUCTO identity for one work."""
+    return next((
+        ext for ext in entry.get("external_ids", [])
+        if ext.get("source") == "scienti"
+        and isinstance(ext.get("id"), dict)
+        and ext["id"].get("COD_RH") is not None
+        and ext["id"].get("COD_PRODUCTO") is not None
+    ), None)
+
+
+def scienti_retry_query(identity, title):
+    """Identify the same source record without merging reused Scienti IDs."""
+    return {
+        "external_ids": {"$elemMatch": {
+            "source": "scienti",
+            "id.COD_RH": identity["id"]["COD_RH"],
+            "id.COD_PRODUCTO": identity["id"]["COD_PRODUCTO"],
+        }},
+        "titles": {"$elemMatch": {
+            "source": "scienti",
+            "title": title,
+        }},
+    }
+
+
+def scienti_insert_lock(identity, title):
+    """Serialize only potentially identical upserts within the thread pool."""
+    key = (
+        str(identity["id"]["COD_RH"]),
+        str(identity["id"]["COD_PRODUCTO"]),
+        title,
+    )
+    return _INSERT_LOCKS[hash(key) % len(_INSERT_LOCKS)]
+
+
+def build_es_work(entry):
+    """Build a valid Elasticsearch document from a parsed Scienti work."""
+    if not entry.get("titles") or not entry["titles"][0].get(
+            "title", "").strip():
+        return None
+    bibliographic_info = entry.get("bibliographic_info", {})
+    return {
+        "title": entry["titles"][0]["title"],
+        "source": entry.get("source", {}).get("name", ""),
+        "year": entry.get("year_published") or 0,
+        "volume": bibliographic_info.get("volume", ""),
+        "issue": bibliographic_info.get("issue", ""),
+        "first_page": bibliographic_info.get("start_page", ""),
+        "last_page": bibliographic_info.get("end_page", ""),
+        "authors": [
+            author["full_name"]
+            for author in entry.get("authors", [])[:5]
+            if author.get("full_name")
+        ],
+        "provenance": "scienti",
+    }
+
+
+def ensure_es_work(entry, work_id, es_handler, es_semaphore=None):
+    """Insert a work in Elasticsearch only when its MongoDB ID is absent."""
+    if not es_handler or work_id is None:
+        return
+    document = build_es_work(entry)
+    if document is None:
+        return
+    exists = run_es_operation(
+        es_semaphore, es_handler.es.exists,
+        index=es_handler.es_index, id=str(work_id))
+    if not exists:
+        run_es_operation(
+            es_semaphore, es_handler.insert_work,
+            _id=str(work_id), work=document)
 
 
 def cod_product_mismatch(list1, list2):
@@ -23,17 +110,18 @@ def cod_product_mismatch(list1, list2):
     """
     # Extract COD_RH and their respective COD_PRODUCTO in list1
     rh_to_product1 = {
-        entry["id"]["COD_RH"]: entry["id"]["COD_PRODUCTO"]
-        for entry in list1 if isinstance(entry["id"], dict) and "COD_RH" in entry["id"] and "COD_PRODUCTO" in entry["id"]
-    }
+        entry["id"]["COD_RH"]: entry["id"]["COD_PRODUCTO"] for entry in list1 if isinstance(
+            entry["id"],
+            dict) and "COD_RH" in entry["id"] and "COD_PRODUCTO" in entry["id"]}
 
     # Extract COD_RH and their respective COD_PRODUCTO in list2
     rh_to_product2 = {
-        entry["id"]["COD_RH"]: entry["id"]["COD_PRODUCTO"]
-        for entry in list2 if isinstance(entry["id"], dict) and "COD_RH" in entry["id"] and "COD_PRODUCTO" in entry["id"]
-    }
+        entry["id"]["COD_RH"]: entry["id"]["COD_PRODUCTO"] for entry in list2 if isinstance(
+            entry["id"],
+            dict) and "COD_RH" in entry["id"] and "COD_PRODUCTO" in entry["id"]}
 
-    # Identify the COD_RH that exist in both lists but have different COD_PRODUCTO
+    # Identify the COD_RH that exist in both lists but have different
+    # COD_PRODUCTO
     mismatched_cod_rh = {
         rh: (rh_to_product1[rh], rh_to_product2[rh])
         # Only COD_RH that exist in both lists
@@ -179,8 +267,8 @@ def process_author(entry, colav_reg, db, verbose=0):
         author_db = None
         if 'external_ids' in scienti_author.keys():
             author_ids = scienti_author['external_ids']
-            author_db = db['person'].find_one(
-                {'external_ids': {'$elemMatch': {'$or': author_ids}}}, {"_id": 1, "full_name": 1, "affiliations": 1, "first_names": 1, "last_names": 1, "initials": 1, "external_ids": 1})
+            author_db = db['person'].find_one({'external_ids': {'$elemMatch': {'$or': author_ids}}}, {
+                "_id": 1, "full_name": 1, "affiliations": 1, "first_names": 1, "last_names": 1, "initials": 1, "external_ids": 1})
 
         if author_db:
             name_match = False
@@ -215,7 +303,9 @@ def process_author(entry, colav_reg, db, verbose=0):
                         {'_id': author['id']}, {"_id": 1, "full_name": 1, "first_names": 1, "last_names": 1, "initials": 1, "external_ids": 1})
                     if author_reg is None:
                         print(
-                            f"ERROR: author with id {author['id']} not found in colav database")
+                            f"ERROR: author with id {
+                                author['id']} found not in colav database")
+                        continue
 
                 # Note: even in openalex names are bad splitted, so we need to fix them
                 # ex: 'full_name': 'Claudia Marcela-Vélez', 'first_names': ['Claudia'], 'last_names': ['Marcela', 'Vélez']  where Marcela is the first name and Vélez is the last name
@@ -245,10 +335,11 @@ def process_author(entry, colav_reg, db, verbose=0):
                             affil in author_affiliations for affil in affiliations_person)
                 # if name and affiliation match, we can replace the author
                 if name_match and affiliation_match:
-                    # replace the author, maybe add the openalex id to the record in the future
+                    # replace the author, maybe add the openalex id to the
+                    # record in the future
                     for reg in author_db["affiliations"]:
-                        reg.pop('start_date')
-                        reg.pop('end_date')
+                        reg.pop('start_date', None)
+                        reg.pop('end_date', None)
                     # adding the group for the author
                     groups = []
                     for aff in scienti_author["affiliations"]:
@@ -284,7 +375,13 @@ def process_author(entry, colav_reg, db, verbose=0):
                         break
 
 
-def process_one_update(scienti_reg, colav_reg, db, collection, empty_work, verbose=0):
+def process_one_update(
+        scienti_reg,
+        colav_reg,
+        db,
+        collection,
+        empty_work,
+        verbose=0):
     """
     Method to update a register in the kahi database from scholar database if it is found.
     This means that the register is already on the kahi database and it is being updated with new information.
@@ -393,11 +490,12 @@ def process_one_update(scienti_reg, colav_reg, db, collection, empty_work, verbo
         for i, author in enumerate(scienti_reg["re_author_others"][1:]):
             if "author_others" not in author.keys():
                 continue
-            # for every record in re_author_others there is a record for author_others/author see schema
+            # for every record in re_author_others there is a record for
+            # author_others/author see schema
             author = author["author_others"][0]
             if author["COD_RH_REF"]:
-                author_db = db["person"].find_one(
-                    {"external_ids.id.COD_RH": author["COD_RH_REF"]}, {"_id": 1, "full_name": 1, "affiliations": 1, "first_names": 1, "last_names": 1, "initials": 1, "external_ids": 1})
+                author_db = db["person"].find_one({"external_ids.id.COD_RH": author["COD_RH_REF"]}, {
+                    "_id": 1, "full_name": 1, "affiliations": 1, "first_names": 1, "last_names": 1, "initials": 1, "external_ids": 1})
                 if author_db:
                     found = False
                     for author_rec in colav_reg["authors"]:
@@ -406,14 +504,18 @@ def process_one_update(scienti_reg, colav_reg, db, collection, empty_work, verbo
                         else:
                             if author_rec['id'] == "":
                                 continue
-                            # only the name can be compared, because we dont have the affiliation of the author from the paper in author_others
+                            # only the name can be compared, because we dont
+                            # have the affiliation of the author from the paper
+                            # in author_others
                             author_reg = db['person'].find_one(
-                                # this is required to get  first_names and last_names
+                                # this is required to get  first_names and
+                                # last_names
                                 {'_id': author_rec['id']}, {"_id": 1, "full_name": 1, "first_names": 1, "last_names": 1, "initials": 1})
 
                             # author_reg is only needed here
                             name_match = compare_author(
-                                author_reg, author_db, len(scienti_reg["re_author_others"]))
+                                author_reg, author_db, len(
+                                    scienti_reg["re_author_others"]))
                             if name_match:
                                 found = True
                                 author_rec["id"] = author_db["_id"]
@@ -422,7 +524,8 @@ def process_one_update(scienti_reg, colav_reg, db, collection, empty_work, verbo
                     if not found:
                         rec = {"id": author_db["_id"],
                                "full_name": author_db["full_name"],
-                               # we dont have affiliation of the author from the paper, we can´t assume one.
+                               # we dont have affiliation of the author from
+                               # the paper, we can´t assume one.
                                "affiliations": []
                                }
                         colav_reg["authors"].append(rec)
@@ -446,7 +549,9 @@ def process_one_update(scienti_reg, colav_reg, db, collection, empty_work, verbo
                         {"id": group_reg["_id"], "name": group_reg["names"][0]["name"]})
             if not group_reg:
                 print(
-                    f'WARNING: group with ids {scienti_reg["group"]["COD_ID_GRUPO"]} and {scienti_reg["group"]["NRO_ID_GRUPO"]} not found in affiliation')
+                    f'WARNING: group with ids {
+                        group.get("COD_ID_GRUPO")} and {
+                        group.get("NRO_ID_GRUPO")} found not in affiliation')
 
     colav_reg["author_count"] = len(colav_reg["authors"])
 
@@ -469,7 +574,8 @@ def process_one_update(scienti_reg, colav_reg, db, collection, empty_work, verbo
     )
 
 
-def process_one_insert(scienti_reg, db, collection, empty_work, es_handler, doi=None, verbose=0):
+def process_one_insert(scienti_reg, db, collection, empty_work, es_handler,
+                       doi=None, verbose=0, es_semaphore=None):
     """
     Function to insert a new register in the database if it is not found in the colav(kahi works) database.
     This means that the register is not on the database and it is being inserted.
@@ -497,6 +603,9 @@ def process_one_insert(scienti_reg, db, collection, empty_work, es_handler, doi=
     """
     # parse
     entry = parse_scienti(scienti_reg, empty_work.copy(), doi)
+    if not entry.get("titles") or not entry["titles"][0].get(
+            "title", "").strip():
+        return
     # link
     source_db = None
     if "external_ids" in entry["source"].keys():
@@ -523,10 +632,15 @@ def process_one_insert(scienti_reg, db, collection, empty_work, es_handler, doi=
                 if verbose > 4:
                     if "title" in entry["source"].keys():
                         print(
-                            f'Register with COD_RH: {scienti_reg["COD_RH"]} and COD_PRODUCTO: {scienti_reg["COD_PRODUCTO"]} could not be linked to a source with name: {entry["source"]["title"]}')
+                            f'Register with COD_RH: {
+                                scienti_reg["COD_RH"]} and COD_PRODUCTO: {
+                                scienti_reg["COD_PRODUCTO"]} could not be linked to a source with name: {
+                                entry["source"]["title"]}')
                     else:
                         print(
-                            f'Register with COD_RH: {scienti_reg["COD_RH"]} and COD_PRODUCTO: {scienti_reg["COD_PRODUCTO"]} does not provide a source')
+                            f'Register with COD_RH: {
+                                scienti_reg["COD_RH"]} and COD_PRODUCTO: {
+                                scienti_reg["COD_PRODUCTO"]} does not provide a source')
             else:
                 if verbose > 4:
                     print(
@@ -536,27 +650,32 @@ def process_one_insert(scienti_reg, db, collection, empty_work, es_handler, doi=
                 if entry["source"]["title"] == "":
                     if verbose > 4:
                         print(
-                            f'Register with COD_RH: {scienti_reg["COD_RH"]} and COD_PRODUCTO: {scienti_reg["COD_PRODUCTO"]} does not provide a source')
+                            f'Register with COD_RH: {
+                                scienti_reg["COD_RH"]} and COD_PRODUCTO: {
+                                scienti_reg["COD_PRODUCTO"]} does not provide a source')
                 else:
                     if verbose > 4:
                         print(
-                            f'Register with COD_RH: {scienti_reg["COD_RH"]} and COD_PRODUCTO: {scienti_reg["COD_PRODUCTO"]} could not be linked to a source with name: {entry["source"]["title"]}')
+                            f'Register with COD_RH: {
+                                scienti_reg["COD_RH"]} and COD_PRODUCTO: {
+                                scienti_reg["COD_PRODUCTO"]} could not be linked to a source with name: {
+                                entry["source"]["title"]}')
             else:
                 if verbose > 4:
                     print(
-                        f'Register with COD_RH: {scienti_reg["COD_RH"]} and COD_PRODUCTO: {scienti_reg["COD_PRODUCTO"]} could not be linked to a source (no ids and no name)')
+                        f'Register with COD_RH: {
+                            scienti_reg["COD_RH"]} and COD_PRODUCTO: {
+                            scienti_reg["COD_PRODUCTO"]} could not be linked to a source (no ids and no name)')
 
-        entry["source"] = {
-            "id": "",
-            "name": entry["source"]["title"] if "title" in entry["source"].keys() else ""
-        }
+        entry["source"] = {"id": "", "name": entry["source"][
+            "title"] if "title" in entry["source"].keys() else ""}
 
     author = entry["authors"][0]
     # search authors and affiliations in db
     author_db = None
     for ext in author["external_ids"]:
-        author_db = db["person"].find_one(
-            {"external_ids.id": ext["id"]}, {"_id": 1, "full_name": 1, "affiliations": 1, "external_ids": 1, "first_names": 1, "last_names": 1})
+        author_db = db["person"].find_one({"external_ids.id": ext["id"]}, {
+            "_id": 1, "full_name": 1, "affiliations": 1, "external_ids": 1, "first_names": 1, "last_names": 1})
         if author_db:
             break
     if author_db:
@@ -684,7 +803,8 @@ def process_one_insert(scienti_reg, db, collection, empty_work, es_handler, doi=
         author_role = other_author.get("TPO_PARTICIPACION", "")
 
         if author_role and cod_rh_ref == primary_cod_rh:
-            entry["authors"][0]["type"] = "advisor" if author_role in ["TUT", "ASE", "COT"] else ""
+            entry["authors"][0]["type"] = "advisor" if author_role in [
+                "TUT", "ASE", "COT"] else ""
             continue  # first author is already inserted
 
         author_db = db["person"].find_one(
@@ -693,8 +813,10 @@ def process_one_insert(scienti_reg, db, collection, empty_work, es_handler, doi=
         if not author_db:
             continue
 
-        # Add author to the list of authors only if it is not already in the list
-        if not any(author["id"] == author_db["_id"] for author in entry["authors"]):
+        # Add author to the list of authors only if it is not already in the
+        # list
+        if not any(author["id"] == author_db["_id"]
+                   for author in entry["authors"]):
             entry["authors"].append({
                 "id": author_db["_id"],
                 "full_name": author_db["full_name"],
@@ -706,8 +828,11 @@ def process_one_insert(scienti_reg, db, collection, empty_work, es_handler, doi=
     # Update date_published if oriented_thesis is available
     details = scienti_reg.get("details", [])
     if details and "oriented_thesis" in details[0].keys():
-        oriented_tesis = details[0].get("oriented_thesis")[0] if details else None
+        oriented_tesis = details[0].get("oriented_thesis")[
+            0] if details else None
         if oriented_tesis:
+            year = None
+            month = None
             if "NRO_ANO_FIN" in oriented_tesis.keys():
                 year = oriented_tesis["NRO_ANO_FIN"]
             if "NRO_MES_FIN" in oriented_tesis.keys():
@@ -732,36 +857,35 @@ def process_one_insert(scienti_reg, db, collection, empty_work, es_handler, doi=
                     {"id": group_reg["_id"], "name": group_reg["names"][0]["name"]})
             if not group_reg:
                 print(
-                    f'WARNING: group with ids {scienti_reg["group"]["COD_ID_GRUPO"]} and {scienti_reg["group"]["NRO_ID_GRUPO"]} not found in affiliation')
+                    f'WARNING: group with ids {
+                        group.get("COD_ID_GRUPO")} and {
+                        group.get("NRO_ID_GRUPO")} found not in affiliation')
 
-    # insert in mongo
-    response = collection.insert_one(entry)
-    # insert in elasticsearch
-    if es_handler:
-        work = {}
-        work["title"] = entry["titles"][0]["title"]
-        work["source"] = entry["source"]["name"]
-        work["year"] = entry["year_published"] if entry["year_published"] else ""
-        work["volume"] = entry["bibliographic_info"]["volume"] if "volume" in entry["bibliographic_info"].keys() else ""
-        work["issue"] = entry["bibliographic_info"]["issue"] if "issue" in entry["bibliographic_info"].keys() else ""
-        work["first_page"] = entry["bibliographic_info"]["first_page"] if "first_page" in entry["bibliographic_info"].keys() else ""
-        work["last_page"] = entry["bibliographic_info"]["last_page"] if "last_page" in entry["bibliographic_info"].keys() else ""
-        authors = []
-        for author in entry['authors']:
-            if len(authors) >= 5:
-                break
-            if "full_name" in author.keys():
-                authors.append(author["full_name"])
-        work["authors"] = authors
-        work["provenance"] = "scienti"
-
-        es_handler.insert_work(_id=str(response.inserted_id), work=work)
+    # Insert idempotently so a failed Elasticsearch operation can be retried.
+    identity = scienti_identity(entry)
+    if identity:
+        title = entry["titles"][0]["title"]
+        with scienti_insert_lock(identity, title):
+            response = collection.update_one(
+                scienti_retry_query(identity, title),
+                {"$setOnInsert": entry},
+                upsert=True,
+            )
+            inserted_id = response.upserted_id
     else:
-        if verbose > 4:
-            print("No elasticsearch index provided")
+        response = collection.insert_one(entry)
+        inserted_id = response.inserted_id
+    # insert or reconcile in elasticsearch
+    if inserted_id is None and identity:
+        existing = collection.find_one(
+            scienti_retry_query(identity, entry["titles"][0]["title"]),
+            {"_id": 1})
+        inserted_id = existing.get("_id") if existing else None
+    ensure_es_work(entry, inserted_id, es_handler, es_semaphore)
 
 
-def process_one(scienti_reg, db, collection, empty_work, es_handler, similarity, verbose=0):
+def process_one(scienti_reg, db, collection, empty_work, es_handler,
+                similarity, verbose=0, es_semaphore=None):
     """
     Function to process a single register from the scienti database.
     This function is used to insert or update a register in the colav(kahi works) database.
@@ -781,20 +905,29 @@ def process_one(scienti_reg, db, collection, empty_work, es_handler, similarity,
     verbose : int, optional
         Verbosity level. The default is 0.
     """
+    title = scienti_reg.get("TXT_NME_PROD")
+    if not isinstance(title, str) or not title.strip():
+        return
+
     doi = None
     # register has doi
     if "TXT_DOI" in scienti_reg.keys():
         if scienti_reg["TXT_DOI"]:
             doi = doi_processor(scienti_reg["TXT_DOI"])
     if not doi:
-        if "TXT_WEB_PRODUCTO" in scienti_reg.keys() and scienti_reg["TXT_WEB_PRODUCTO"] and "10." in scienti_reg["TXT_WEB_PRODUCTO"]:
+        if "TXT_WEB_PRODUCTO" in scienti_reg.keys(
+        ) and scienti_reg["TXT_WEB_PRODUCTO"] and "10." in scienti_reg["TXT_WEB_PRODUCTO"]:
             doi = doi_processor(scienti_reg["TXT_WEB_PRODUCTO"])
             if doi:
                 extracted_doi = re.compile(
                     r'10\.\d{4,9}/[-._;()/:A-Z0-9]+', re.IGNORECASE).match(doi)
                 if extracted_doi:
                     doi = extracted_doi.group(0)
-                    for keyword in ['abstract', 'homepage', 'tpmd200765', 'event_abstract']:
+                    for keyword in [
+                        'abstract',
+                        'homepage',
+                        'tpmd200765',
+                            'event_abstract']:
                         doi = doi.split(
                             f'/{keyword}')[0] if keyword in doi else doi
     if doi:
@@ -803,16 +936,33 @@ def process_one(scienti_reg, db, collection, empty_work, es_handler, similarity,
 
         if colav_reg:  # update the register
             process_one_update(
-                scienti_reg, colav_reg, db, collection, empty_work, verbose=verbose)
+                scienti_reg,
+                colav_reg,
+                db,
+                collection,
+                empty_work,
+                verbose=verbose)
         else:  # insert a new register
             process_one_insert(
-                scienti_reg, db, collection, empty_work, es_handler, doi, verbose=verbose)
+                scienti_reg, db, collection, empty_work, es_handler, doi,
+                verbose=verbose, es_semaphore=es_semaphore)
     elif similarity:  # does not have a doi identifier
         # elasticsearch section
         if es_handler:
             # Search in elasticsearch
             entry = parse_scienti(
                 scienti_reg, empty_work.copy(), verbose=verbose)
+            if not entry.get("titles") or not entry["titles"][0].get(
+                    "title", "").strip():
+                return
+            identity = scienti_identity(entry)
+            existing = (collection.find_one(
+                scienti_retry_query(identity, entry["titles"][0]["title"]),
+                {"_id": 1}) if identity else None)
+            if existing:
+                ensure_es_work(
+                    entry, existing["_id"], es_handler, es_semaphore)
+                return
             work = {}
             work["title"] = entry["titles"][0]["title"]
             work["source"] = entry["source"]["name"] if "name" in entry["source"].keys(
@@ -820,8 +970,9 @@ def process_one(scienti_reg, db, collection, empty_work, es_handler, similarity,
             work["year"] = entry["year_published"] if entry["year_published"] else "0"
             work["volume"] = entry["bibliographic_info"]["volume"] if "volume" in entry["bibliographic_info"].keys() else ""
             work["issue"] = entry["bibliographic_info"]["issue"] if "issue" in entry["bibliographic_info"].keys() else ""
-            work["first_page"] = entry["bibliographic_info"]["first_page"] if "first_page" in entry["bibliographic_info"].keys() else ""
-            work["last_page"] = entry["bibliographic_info"]["last_page"] if "last_page" in entry["bibliographic_info"].keys() else ""
+            work["first_page"] = entry["bibliographic_info"].get(
+                "start_page", "")
+            work["last_page"] = entry["bibliographic_info"].get("end_page", "")
             authors = []
             for author in entry['authors']:
                 if len(authors) >= 5:
@@ -830,7 +981,8 @@ def process_one(scienti_reg, db, collection, empty_work, es_handler, similarity,
                     authors.append(author["full_name"])
             work["authors"] = authors
             work["provenance"] = "scienti"
-            response = es_handler.search_work(
+            response = run_es_operation(
+                es_semaphore, es_handler.search_work,
                 title=work["title"],
                 source=work["source"],
                 year=str(work["year"]),
@@ -846,21 +998,41 @@ def process_one(scienti_reg, db, collection, empty_work, es_handler, similarity,
                     {"_id": ObjectId(response["_id"])})
                 if colav_reg:
                     # TODO: add author check here before to do the update
-                    if has_scienti_source(entry["external_ids"]) and has_scienti_source(colav_reg["external_ids"]):
-                        if cod_product_mismatch(entry["external_ids"], colav_reg["external_ids"]):
+                    if has_scienti_source(
+                            entry["external_ids"]) and has_scienti_source(
+                            colav_reg["external_ids"]):
+                        if cod_product_mismatch(
+                                entry["external_ids"], colav_reg["external_ids"]):
                             # if they have the same COD_RH  but different COD_PRODUCTO
                             # then insert the new register
-                            process_one_insert(scienti_reg, db, collection,
-                                               empty_work, es_handler, doi=None, verbose=verbose)
+                            process_one_insert(
+                                scienti_reg,
+                                db,
+                                collection,
+                                empty_work,
+                                es_handler,
+                                doi=None,
+                                verbose=verbose,
+                                es_semaphore=es_semaphore)
                             return
-                    if has_scienti_source(entry["types"]) and has_scienti_source(colav_reg["types"]):
+                    if has_scienti_source(
+                            entry["types"]) and has_scienti_source(
+                            colav_reg["types"]):
                         # if type is equal, then update the register
-                        if check_first_level_type(entry["types"], colav_reg["types"]):
+                        if check_first_level_type(
+                                entry["types"], colav_reg["types"]):
                             process_one_update(scienti_reg, colav_reg, db,
                                                collection, empty_work, verbose)
                         else:
-                            process_one_insert(scienti_reg, db, collection,
-                                               empty_work, es_handler, doi=None, verbose=verbose)
+                            process_one_insert(
+                                scienti_reg,
+                                db,
+                                collection,
+                                empty_work,
+                                es_handler,
+                                doi=None,
+                                verbose=verbose,
+                                es_semaphore=es_semaphore)
                     else:  # there is not scienti types to compare, then update them
                         process_one_update(scienti_reg, colav_reg, db,
                                            collection, empty_work, verbose)
@@ -872,7 +1044,8 @@ def process_one(scienti_reg, db, collection, empty_work, es_handler, similarity,
                         print(response)
             else:  # insert new register
                 process_one_insert(scienti_reg, db, collection,
-                                   empty_work, es_handler, doi=None, verbose=verbose)
+                                   empty_work, es_handler, doi=None,
+                                   verbose=verbose, es_semaphore=es_semaphore)
         else:
             if verbose > 4:
                 print("No elasticsearch index provided")

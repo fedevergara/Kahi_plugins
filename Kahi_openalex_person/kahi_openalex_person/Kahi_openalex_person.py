@@ -6,6 +6,18 @@ from kahi_impactu_utils.Utils import get_id_from_url, split_names
 from re import sub
 
 
+def freeze_identity(value):
+    if isinstance(value, dict):
+        return tuple(sorted((key, freeze_identity(item)) for key, item in value.items()))
+    if isinstance(value, (list, tuple)):
+        return tuple(freeze_identity(item) for item in value)
+    return value
+
+
+def related_work_key(work):
+    return work.get("source"), freeze_identity(work.get("id"))
+
+
 def process_one_insert(person_db, oa_author, client, db_name, empty_person, related_works):
     """"
     Insert a new OpenAlex author record into the database.
@@ -57,6 +69,7 @@ def process_one_insert(person_db, oa_author, client, db_name, empty_person, rela
             entry["external_ids"].append(
                 {"provenance": "openalex", "source": source, "id": idx})
 
+    affiliation_ids = set()
     if "last_known_institutions" in oa_author.keys():
         if oa_author["last_known_institutions"]:
             for inst in oa_author["last_known_institutions"]:
@@ -67,7 +80,7 @@ def process_one_insert(person_db, oa_author, client, db_name, empty_person, rela
                     if "ror" in inst.keys():
                         aff_reg = db["affiliations"].find_one(
                             {"external_ids.id": inst["ror"]})
-                if aff_reg:
+                if aff_reg and aff_reg["_id"] not in affiliation_ids:
                     name = aff_reg["names"][0]["name"]
                     for n in aff_reg["names"]:
                         if n["lang"] == "es":
@@ -82,14 +95,18 @@ def process_one_insert(person_db, oa_author, client, db_name, empty_person, rela
                         "start_date": -1,
                         "end_date": -1
                     })
+                    affiliation_ids.add(aff_reg["_id"])
 
+    related_work_keys = set()
     for rwork in related_works:
         for key in rwork["ids"].keys():
             if key == "doi":
                 rec = {"provenance": "openalex",
                        "source": key, "id": rwork["ids"][key], "year": rwork["publication_year"], "institutions": rwork["authorships"]["institutions"]}
-                if rec not in entry["related_works"]:
+                key = related_work_key(rec)
+                if key not in related_work_keys:
                     entry["related_works"].append(rec)
+                    related_work_keys.add(key)
                 break
     collection.insert_one(entry)
 
@@ -129,15 +146,25 @@ def process_one_update(person_db, oa_author, client, db_name, empty_person, rela
 
     # Iterate over OpenAlex IDs and add any that are not already in the document
     new_external_ids = []
+    external_id_values = {
+        freeze_identity(record.get("id"))
+        for record in person_db.get("external_ids", [])
+    }
     for source, url in oa_author.get("ids", {}).items():
         idx = get_id_from_url(url)
         if idx:
             record = {"provenance": "openalex", "source": source, "id": idx}
-            if record not in person_db.get("external_ids", []):
+            identity = freeze_identity(idx)
+            if identity not in external_id_values:
                 new_external_ids.append(record)
+                external_id_values.add(identity)
     entry["external_ids"] = person_db.get(
         "external_ids", []) + new_external_ids
 
+    affiliation_ids = {
+        affiliation.get("id")
+        for affiliation in person_db.get("affiliations", [])
+    }
     if "last_known_institutions" in oa_author.keys():
         if oa_author["last_known_institutions"]:
             for inst in oa_author["last_known_institutions"]:
@@ -156,7 +183,7 @@ def process_one_update(person_db, oa_author, client, db_name, empty_person, rela
                             break
                         elif n["lang"] == "en":
                             name = n["name"]
-                    if aff_reg["_id"] not in [aff["id"] for aff in person_db.get("affiliations", [])]:
+                    if aff_reg["_id"] not in affiliation_ids:
                         entry["affiliations"].append({
                             "id": aff_reg["_id"],
                             "name": name,
@@ -164,14 +191,21 @@ def process_one_update(person_db, oa_author, client, db_name, empty_person, rela
                             "start_date": -1,
                             "end_date": -1
                         })
+                        affiliation_ids.add(aff_reg["_id"])
 
+    related_work_keys = {
+        related_work_key(work)
+        for work in person_db.get("related_works", [])
+    }
     for rwork in related_works:
         for key in rwork["ids"].keys():
             if key == "doi":
                 rec = {"provenance": "openalex",
                        "source": key, "id": rwork["ids"][key], "year": rwork["publication_year"], "institutions": rwork["authorships"]["institutions"]}
-                if rec not in entry["related_works"]:
+                key = related_work_key(rec)
+                if key not in related_work_keys:
                     entry["related_works"].append(rec)
+                    related_work_keys.add(key)
                 break
 
     # Update the person document in the database

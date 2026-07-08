@@ -22,12 +22,17 @@ class Kahi_doaj_sources(KahiBase):
         self.doaj_client = MongoClient(config["doaj_sources"]["database_url"])
         if config["doaj_sources"]["database_name"] not in self.doaj_client.list_database_names():
             raise Exception(
-                f"""Database {config["doaj_sources"]["database_name"]} not found in {config["doaj_sources"]["database_url"]}""")
+                f"""Database {
+                    config["doaj_sources"]["database_name"]} found not in {
+                    config["doaj_sources"]["database_url"]}""")
         self.doaj_db = self.doaj_client[config["doaj_sources"]
                                         ["database_name"]]
         if config["doaj_sources"]["collection_name"] not in self.doaj_db.list_collection_names():
             raise Exception(
-                f"""Collection {config["doaj_sources"]["database_name"]}.{config["doaj_sources"]["collection_name"]} not found in {config["doaj_sources"]["database_name"]}""")
+                f"""Collection {
+                    config["doaj_sources"]["database_name"]}.{
+                    config["doaj_sources"]["collection_name"]} found not in {
+                    config["doaj_sources"]["database_name"]}""")
         self.doaj_collection = self.doaj_db[config["doaj_sources"]
                                             ["collection_name"]]
 
@@ -35,12 +40,27 @@ class Kahi_doaj_sources(KahiBase):
 
         self.already_in_db = []
 
+    def _record_type(self, oldreg, reg):
+        return oldreg.get("record_type") or reg.get("record_type") or "journal"
+
+    def _append_type(self, entry, source, source_type):
+        if not source_type:
+            return
+        for typ in entry["types"]:
+            if typ.get("source") == source and typ.get("type") == source_type:
+                return
+        entry["types"].append({"source": source, "type": source_type})
+
     def update_doaj(self, reg, entry):
+        doaj_found = False
         for upd in entry["updated"]:
             if upd["source"] == "doaj":
-                return
+                doaj_found = True
+                break
         del (entry["_id"])
-        entry["updated"].append({"source": "doaj", "time": int(time())})
+        if not doaj_found:
+            entry["updated"].append({"source": "doaj", "time": int(time())})
+        self._append_type(entry, "doaj", reg.get("record_type", "journal"))
         for name in entry["names"]:
             if name == reg["title"]:
                 entry["names"].append(
@@ -49,8 +69,8 @@ class Kahi_doaj_sources(KahiBase):
         entry["keywords"] = list(set(entry["keywords"]))
         entry["languages"] = reg["language"] if reg["language"] != entry["languages"] else entry["languages"]
         if not entry["publisher"]:
-            entry["publisher"] = {"country_code": reg["publisher"]
-                                  ["country"], "name": reg["publisher"]["name"], "id": ""}
+            entry["publisher"] = {"country_code": reg["publisher"][
+                "country"], "name": reg["publisher"]["name"], "id": ""}
         entry["open_access_start_year"] = reg["oa_start"] if "oa_start" in reg.keys(
         ) else None
         for ref, url in reg["ref"].items():
@@ -88,11 +108,8 @@ class Kahi_doaj_sources(KahiBase):
         if "subject" in reg.keys():
             if reg["subject"]:
                 for sub in reg["subject"]:
-                    sub_entry = {
-                        "id": "",
-                        "name": sub["term"],
-                        "external_ids": [{"source": sub["scheme"], "id": sub["code"]}]
-                    }
+                    sub_entry = {"id": "", "name": sub["term"], "external_ids": [
+                        {"source": sub["scheme"], "id": sub["code"]}]}
                     if sub["scheme"] in subjects_source.keys():
                         subjects_source[sub["scheme"]].append(
                             sub_entry)
@@ -111,6 +128,7 @@ class Kahi_doaj_sources(KahiBase):
         reg_list = list(self.doaj_collection.find())
         for i, oldreg in enumerate(reg_list):
             reg = oldreg["bibjson"]
+            reg["record_type"] = self._record_type(oldreg, reg)
             if "eissn" in reg.keys():
                 reg_db = self.collection.find_one(
                     {"external_ids.id": reg["eissn"]})
@@ -136,12 +154,13 @@ class Kahi_doaj_sources(KahiBase):
 
             entry = self.empty_source()
             entry["updated"] = [{"source": "doaj", "time": int(time())}]
+            self._append_type(entry, "doaj", reg["record_type"])
             entry["names"] = [
                 {"lang": "en", "name": reg["title"], "source": "doaj"}]
             entry["keywords"] = reg["keywords"]
             entry["languages"] = reg["language"]
-            entry["publisher"] = {"country_code": reg["publisher"]
-                                  ["country"], "name": reg["publisher"]["name"], "id": ""}
+            entry["publisher"] = {"country_code": reg["publisher"][
+                "country"], "name": reg["publisher"]["name"], "id": ""}
             entry["open_access_start_year"] = reg["oa_start"] if "oa_start" in reg.keys(
             ) else None
             entry["external_urls"] = [
@@ -168,11 +187,8 @@ class Kahi_doaj_sources(KahiBase):
             if "subject" in reg.keys():
                 if reg["subject"]:
                     for sub in reg["subject"]:
-                        sub_entry = {
-                            "id": "",
-                            "name": sub["term"],
-                            "external_ids": [{"source": sub["scheme"], "id": sub["code"]}]
-                        }
+                        sub_entry = {"id": "", "name": sub["term"], "external_ids": [
+                            {"source": sub["scheme"], "id": sub["code"]}]}
                         if sub["scheme"] in subjects_source.keys():
                             subjects_source[sub["scheme"]].append(
                                 sub_entry)

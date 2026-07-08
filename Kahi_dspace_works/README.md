@@ -26,21 +26,17 @@ Parameters for kahi_run in the workflow should be similar to.
 ```
   dspace_works:
     database_url: localhost:27017
-    database_name: oxomoc
-    repositories:
-      - institution_id: https://ror.org/03bp5hc83 # Universidad de Antioquia
-        collection_name: dspace_udea_records
-        repository_url: https://repositorio.udea.edu.co
-      - institution_id: https://ror.org/00jb9vg53 # Universidad del Valle
-        collection_name: dspace_univalle_records
-        repository_url: https://bibliotecadigital.univalle.edu.co
-      - institution_id: https://ror.org/05tkb8v92 #Universidad Autónoma Latinoamericana
-        collection_name: dspace_unaula_records
-        repository_url: http://repositorio.unaula.edu.co:4000
-      - institution_id: https://ror.org/02xtwpk10 # Universidad Externado de Colombia
-        collection_name: dspace_uext_records
-        repository_url: https://bdigital.uexternado.edu.co
+    database_name: oxomoc_colombia
+    batch_size: 500
+    num_jobs: 12
+    # Optional: collections are discovered automatically from *_records.
+    repository_affiliations:
+      dspace_udea_records: https://ror.org/03bp5hc83
+      dspace_univalle_records: https://ror.org/02xw8cw23
 ```
+
+`repositories` remains supported for backwards compatibility. Use `collections`
+or `exclude_collections` to restrict automatic discovery.
 
 
 # License
@@ -48,6 +44,5 @@ BSD-3-Clause License
 
 # Links
 http://colav.udea.edu.co/
-
 
 

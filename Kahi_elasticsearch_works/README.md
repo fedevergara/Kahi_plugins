@@ -29,13 +29,16 @@ config:
   log_database: kahi_log
   log_collection: log
 workflow:
-  elasticsearch_works:
+  elasticsearch_works/delete:
+    es_index: kahi_es
     es_url: http://localhost:9200
     es_user: elastic
     es_password: colav
     task: delete
+    debug: false
     verbose: 5
-  elasticsearch_works:
+  elasticsearch_works/bulk_insert:
+    es_index: kahi_es
     es_url: http://localhost:9200
     es_user: elastic
     es_password: colav
@@ -44,7 +47,7 @@ workflow:
     verbose: 5
 ```
 The task options are:
-* delete: deletes everythin in the elasticsearch database
+* delete: deletes the configured index when it exists; otherwise it completes successfully without creating it
 * bulk_insert: inserts the registers from kahi's resulting database in chunks of bulk_size
 
 # License
@@ -52,4 +55,3 @@ BSD-3-Clause License
 
 # Links
 http://colav.udea.edu.co/
-

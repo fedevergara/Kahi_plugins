@@ -5,6 +5,7 @@ from kahi_scienti_works.process_one import process_one
 from mohan.Similarity import Similarity
 from kahi_impactu_utils.Utils import doi_processor
 import re
+from threading import BoundedSemaphore
 
 
 class Kahi_scienti_works(KahiBase):
@@ -49,6 +50,14 @@ class Kahi_scienti_works(KahiBase):
         self.collection.create_index("authors.id")
         self.collection.create_index([("titles.title", TEXT)])
         self.collection.create_index("external_ids.id")
+        self.db["person"].create_index("external_ids.id")
+        self.db["person"].create_index("external_ids.id.COD_RH")
+        self.db["person"].create_index("full_name")
+        self.db["person"].create_index("affiliations.id")
+        self.db["affiliations"].create_index("external_ids.id")
+        self.db["affiliations"].create_index("names.name")
+        self.db["affiliations"].create_index("relations.id")
+        self.db["sources"].create_index("external_ids.id")
         if "es_index" in config["scienti_works"].keys() and "es_url" in config["scienti_works"].keys() and "es_user" in config["scienti_works"].keys() and "es_password" in config["scienti_works"].keys():  # noqa: E501
             es_index = config["scienti_works"]["es_index"]
             es_url = config["scienti_works"]["es_url"]
@@ -70,6 +79,14 @@ class Kahi_scienti_works(KahiBase):
         ) else 1
         self.verbose = config["scienti_works"]["verbose"] if "verbose" in config["scienti_works"].keys(
         ) else 0
+        self.es_semaphore = None
+        if self.es_handler is not None and self.task != "doi":
+            es_max_concurrency = config["scienti_works"].get(
+                "es_max_concurrency", 8)
+            if es_max_concurrency < 1:
+                raise ValueError(
+                    "scienti_works.es_max_concurrency must be greater than zero")
+            self.es_semaphore = BoundedSemaphore(es_max_concurrency)
 
         # checking if the databases and collections are available
         self.check_databases_and_collections()
@@ -88,7 +105,9 @@ class Kahi_scienti_works(KahiBase):
                                                                     db_info['collection_name']))
             client.close()
 
-    def process_doi_group(self, group, db, collection, collection_scienti, empty_work, es_handler, similarity, verbose=0):
+    def process_doi_group(self, group, db, collection, collection_scienti,
+                          empty_work, es_handler, similarity, verbose=0,
+                          es_semaphore=None):
         """
         This method processes a group of documents with the same DOI.
         This allows to process the documents in parallel without having to worry about the DOI being processed more than once.
@@ -117,7 +136,8 @@ class Kahi_scienti_works(KahiBase):
         for i in group["ids"]:
             reg = collection_scienti.find_one({"_id": i})
             process_one(reg, db, collection, empty_work,
-                        es_handler, similarity, verbose)
+                        es_handler, similarity, verbose,
+                        es_semaphore=es_semaphore)
 
     def process_scienti(self, db, collection, config):
         """
@@ -164,12 +184,13 @@ class Kahi_scienti_works(KahiBase):
                 {"$project": {"doi": {"$toLower": "$doi"}}},
                 {"$group": {"_id": "$doi", "ids": {"$push": "$_id"}}}
             ]
-            paper_group_doi_cursor = scienti.aggregate(
-                pipeline)  # update for doi and not doi
-            Parallel(
+            paper_groups = list(scienti.aggregate(
+                pipeline, allowDiskUse=True))
+            results = Parallel(
                 n_jobs=self.n_jobs,
                 verbose=self.verbose,
-                backend="threading")(
+                backend="threading",
+                return_as="generator_unordered")(
                 delayed(self.process_doi_group)(
                     doi_group,
                     db,
@@ -178,9 +199,12 @@ class Kahi_scienti_works(KahiBase):
                     self.empty_work(),
                     self.es_handler,
                     similarity=False,
-                    verbose=self.verbose
-                ) for doi_group in paper_group_doi_cursor
+                    verbose=self.verbose,
+                    es_semaphore=self.es_semaphore,
+                ) for doi_group in paper_groups
             )
+            for _ in results:
+                pass
         else:
             # correr doi processor para TXT_DOI y TXT_WEBSITE*
             # saco los dois malos y luego hago un find $in sobre esos COD_RH /COD_PRODUCTO y paso el cursor a parallel
@@ -204,6 +228,7 @@ class Kahi_scienti_works(KahiBase):
             count = 0
             for scienti_reg in paper_group_doi_cursor:
                 count += 1
+                doi = None
                 if scienti_reg["_id"]["doi"]:
                     doi = doi_processor(scienti_reg["_id"]["doi"])
                 if not doi:
@@ -222,10 +247,11 @@ class Kahi_scienti_works(KahiBase):
             print(f"INFO: processing {len(works_nodoi)} records with bad dois")
             paper_cursor = scienti.find(
                 {"_id": {"$in": works_nodoi}, "TXT_NME_PROD_FILTRO": {"$ne": None}, "TXT_NME_PROD": {"$ne": ' '}, "product_type.COD_TIPO_PRODUCTO": {"$in": types_level0}})
-            Parallel(
+            results = Parallel(
                 n_jobs=self.n_jobs,
                 verbose=self.verbose,
-                backend="threading")(
+                backend="threading",
+                return_as="generator_unordered")(
                 delayed(process_one)(
                     work,
                     db,
@@ -233,9 +259,12 @@ class Kahi_scienti_works(KahiBase):
                     self.empty_work(),
                     self.es_handler,
                     similarity=True,
-                    verbose=self.verbose
+                    verbose=self.verbose,
+                    es_semaphore=self.es_semaphore,
                 ) for work in paper_cursor
             )
+            for _ in results:
+                pass
 
             paper_cursor = scienti.find(
                 {"$or": [{"doi": {"$eq": ""}}, {"doi": {"$eq": None}}], "TXT_NME_PROD_FILTRO": {"$ne": None}, "TXT_NME_PROD": {"$ne": ' '}, "product_type.COD_TIPO_PRODUCTO": {"$in": types_level0}})
@@ -243,10 +272,11 @@ class Kahi_scienti_works(KahiBase):
                 {"$or": [{"doi": {"$eq": ""}}, {"doi": {"$eq": None}}], "TXT_NME_PROD_FILTRO": {"$ne": None}, "TXT_NME_PROD": {"$ne": ' '}, "product_type.COD_TIPO_PRODUCTO": {"$in": types_level0}})
             print(f"INFO: processing {paper_cursor_count} records without doi")
 
-            Parallel(
+            results = Parallel(
                 n_jobs=self.n_jobs,
                 verbose=self.verbose,
-                backend="threading")(
+                backend="threading",
+                return_as="generator_unordered")(
                 delayed(process_one)(
                     work,
                     db,
@@ -254,9 +284,12 @@ class Kahi_scienti_works(KahiBase):
                     self.empty_work(),
                     self.es_handler,
                     similarity=True,
-                    verbose=self.verbose
+                    verbose=self.verbose,
+                    es_semaphore=self.es_semaphore,
                 ) for work in paper_cursor
             )
+            for _ in results:
+                pass
         client.close()
 
     def run(self):

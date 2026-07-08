@@ -21,6 +21,7 @@ class Kahi_scienti_person(KahiBase):
         self.collection = self.db["person"]
 
         self.collection.create_index("external_ids.id")
+        self.collection.create_index("external_ids.id.COD_RH")
         self.collection.create_index("affiliations.id")
         self.collection.create_index([("full_name", TEXT)])
 
@@ -58,6 +59,10 @@ class Kahi_scienti_person(KahiBase):
                     [('author.NRO_DOCUMENTO_IDENT', ASCENDING)])
                 collection.create_index([('author.COD_RH', ASCENDING)])
                 collection.create_index([('author_others', ASCENDING)])
+                collection.create_index(
+                    [('re_author_others.author_others.COD_RH_REF', ASCENDING)])
+                collection.create_index(
+                    [('re_author_others.author.COD_RH', ASCENDING)])
                 client.close()
 
     def update_inserted(self, config, verbose=0):

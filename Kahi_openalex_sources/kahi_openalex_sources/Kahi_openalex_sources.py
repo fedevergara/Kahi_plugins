@@ -17,36 +17,59 @@ def get_open_access_start_year(source):
     return source["open_access_start_year"]
 
 
+def iter_issns(value):
+    if not value:
+        return []
+    if isinstance(value, list):
+        raw_values = value
+    else:
+        raw_values = [value]
+    issns = []
+    for raw in raw_values:
+        if raw is None:
+            continue
+        issn = str(raw).strip()
+        if issn and issn not in issns:
+            issns.append(issn)
+    return issns
+
+
+def has_external_id(entry, source, identifier):
+    identifier = str(identifier)
+    for ext in entry["external_ids"]:
+        if ext.get("source") == source and str(ext.get("id")) == identifier:
+            return True
+    return False
+
+
+def append_external_id(entry, source, identifier):
+    if identifier is None:
+        return
+    identifier = str(identifier).strip()
+    if not identifier or has_external_id(entry, source, identifier):
+        return
+    entry["external_ids"].append({"source": source, "id": identifier})
+
+
 def process_one(source, client, db_name, empty_source):
     db = client[db_name]
     collection = db["sources"]
     global_counts = get_global_counts(source)
     open_access_start_year = get_open_access_start_year(source)
 
-    source_db = None
-    if "issn" in source.keys():
-        if source["issn"]:
-            if isinstance(source["issn"], list) and len(source["issn"]) > 1:
-                source_db = collection.find_one(
-                    {"external_ids.id": source["issn"][0]})
-                if not source_db:
-                    source_db = collection.find_one(
-                        {"external_ids.id": source["issn"][1]})
-            else:
-                source_db = collection.find_one(
-                    {"external_ids.id": source["issn"]})
+    source_db = collection.find_one(
+        {"external_ids": {"$elemMatch": {"source": "openalex", "id": source["id"]}}}
+    )
+    if not source_db:
+        issns = iter_issns(source.get("issn"))
+        if issns:
+            source_db = collection.find_one({"external_ids.id": {"$in": issns}})
     if not source_db:
         if "issn_l" in source.keys():
             if source["issn_l"]:
                 source_db = collection.find_one(
                     {"external_ids.id": source["issn_l"]})
     if source_db:
-        openalex_id_found = False
-        for ext in source_db["external_ids"]:
-            if ext["id"] == source["id"]:
-                openalex_id_found = True
-                break
-
         updated_found = False
         for upd in source_db["updated"]:
             if upd["source"] == "openalex":
@@ -56,9 +79,10 @@ def process_one(source, client, db_name, empty_source):
             source_db["updated"].append(
                 {"source": "openalex", "time": int(time())})
 
-        if not openalex_id_found:
-            source_db["external_ids"].append(
-                {"source": "openalex", "id": source["id"]})
+        append_external_id(source_db, "openalex", source["id"])
+        for issn in iter_issns(source.get("issn")):
+            append_external_id(source_db, "issn", issn)
+        append_external_id(source_db, "issn_l", source.get("issn_l"))
 
         if "type" in source.keys():
             if source["type"]:
@@ -121,14 +145,9 @@ def process_one(source, client, db_name, empty_source):
             {"lang": "en", "name": source["display_name"], "source": "openalex"})
         entry["external_ids"].append(
             {"source": "openalex", "id": source["id"]})
-        if "issn" in source.keys():
-            if source["issn"]:
-                entry["external_ids"].append(
-                    {"source": "issn", "id": source["issn"]})
-        if "issn_l" in source.keys():
-            if source["issn_l"]:
-                entry["external_ids"].append(
-                    {"source": "issn_l", "id": source["issn_l"]})
+        for issn in iter_issns(source.get("issn")):
+            append_external_id(entry, "issn", issn)
+        append_external_id(entry, "issn_l", source.get("issn_l"))
         if "type" in source.keys():
             if source["type"]:
                 entry["types"].append(

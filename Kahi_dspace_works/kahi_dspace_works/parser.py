@@ -2,7 +2,7 @@ from time import time
 from kahi_impactu_utils.Utils import lang_poll, get_name_connector, doi_processor
 from kahi_impactu_utils.String import parse_mathml, parse_html
 from kahi_impactu_utils.String import text_to_inverted_index
-from kahi_dspace_works.utils import is_thesis, get_oai_pmh_url
+from kahi_dspace_works.utils import get_dim_fields, get_oai_pmh_url, is_thesis
 import unicodedata
 
 
@@ -72,24 +72,24 @@ def split_names_dspace(s, connectors=get_name_connector()):
         values = s.split(",")
         if len(values) != 2:  # son nombres malos, mal ingresados o entidades raras
             return {}
-        l, n = values
+        surname_part, name_part = values
         if c.intersection(s.upper().split()):
-            if c.intersection(l.upper().split()):
-                sn = split_name_part(l, list(c))
+            if c.intersection(surname_part.upper().split()):
+                sn = split_name_part(surname_part, list(c))
             else:
-                sn = l.split()
-            if c.intersection(n.upper().split()):
-                ns = split_name_part(n, list(c))
+                sn = surname_part.split()
+            if c.intersection(name_part.upper().split()):
+                ns = split_name_part(name_part, list(c))
             else:
-                ns = n.split()
+                ns = name_part.split()
             d["first_names"] = ns
             d["last_names"] = sn
             d["full_name"] = " ".join(d["first_names"] + d["last_names"])
             d["initials"] = "".join([x[0] for x in d["first_names"]])
             return d
         else:
-            d["first_names"] = n.split()
-            d["last_names"] = l.split()
+            d["first_names"] = name_part.split()
+            d["last_names"] = surname_part.split()
             d["full_name"] = " ".join(d["first_names"] + d["last_names"])
             d["initials"] = "".join([x[0] for x in d["first_names"]])
             nfkd_form = unicodedata.normalize("NFKD", d["initials"])
@@ -101,14 +101,14 @@ def split_names_dspace(s, connectors=get_name_connector()):
         return {}
 
 
-def get_dspace_url(oai_id, base_url):
+def get_dspace_url(reg, base_url):
     """
     Construct the URL of a DSpace item from its OAI-PMH identifier.
 
     Parameters:
     ----------
-    oai_id: str
-        The OAI-PMH identifier of the DSpace item.
+    reg: dict
+        The OAI-PMH record.
     base_url: str
         The base URL of the DSpace instance.
 
@@ -116,7 +116,16 @@ def get_dspace_url(oai_id, base_url):
     -------
     The URL of the DSpace item.
     """
-    # Validate if the ID has the expected prefix
+    for field in get_dim_fields(reg):
+        if (
+            field.get("@element") == "identifier"
+            and field.get("@qualifier") == "uri"
+            and isinstance(field.get("#text"), str)
+            and field["#text"].startswith(("http://", "https://"))
+        ):
+            return field["#text"]
+
+    oai_id = reg.get("_id", "")
     prefix = "oai:"
     if not oai_id.startswith(prefix):
         raise ValueError("The ID does not follow the expected OAI-PMH format.")
@@ -128,7 +137,9 @@ def get_dspace_url(oai_id, base_url):
 
     item_identifier = parts[1]  # Extracts "10893/3527"
     # Construct the final URL
-    return f"{base_url}/handle/{item_identifier}"
+    if not base_url:
+        return ""
+    return f"{base_url.rstrip('/')}/handle/{item_identifier}"
 
 
 def get_type_dspace(text: str) -> dict:
@@ -191,9 +202,7 @@ def parse_dspace(
     entry = empty_work.copy()
     entry["updated"] = [{"source": "dspace", "time": int(time())}]
     thesis = False
-    for field in reg["OAI-PMH"]["GetRecord"]["record"]["metadata"]["dim:dim"][
-        "dim:field"
-    ]:
+    for field in get_dim_fields(reg):
 
         # Title
         if field["@element"] == "title" and "#text" in field:
@@ -209,13 +218,13 @@ def parse_dspace(
                       field, reg["_id"])
 
         # year
-        if (
-            field["@element"] == "date" and "@qualifier" in field and field["@qualifier"] == "issued"
-        ):
+        if (field["@element"] ==
+                "date" and "@qualifier" in field and field["@qualifier"] == "issued"):
             if "#text" not in field:
                 print("WARNING: #text not found in date \n",
                       field, reg["_id"])
-            if "#text" in field and field["#text"] and len(field["#text"]) >= 4:
+            if "#text" in field and field["#text"] and len(
+                    field["#text"]) >= 4:
                 if field["#text"][:4].isdigit():
                     if entry["year_published"]:
                         if entry["year_published"] >= int(field["#text"][:4]):
@@ -223,9 +232,8 @@ def parse_dspace(
                     else:
                         entry["year_published"] = int(field["#text"][:4])
         # Abstract
-        if (
-            field["@element"] == "description" and "@qualifier" in field and field["@qualifier"] == "abstract"
-        ):
+        if (field["@element"] ==
+                "description" and "@qualifier" in field and field["@qualifier"] == "abstract"):
             if "#text" in field:
                 abstract = field["#text"]
                 abstract_lang = lang_poll(abstract, verbose=verbose)
@@ -234,7 +242,7 @@ def parse_dspace(
                         "abstract": text_to_inverted_index(abstract),
                         "lang": abstract_lang,
                         "source": "dspace",
-                        "provenance": "space",
+                        "provenance": "dspace",
                     }
                 )
             else:
@@ -242,10 +250,8 @@ def parse_dspace(
                       field, reg["_id"])
 
         # Authors
-        if (
-            field["@element"] == "contributor" and "@qualifier" in field and field["@qualifier"] in [
-                "author", "advisor"] and "#text" in field
-        ):
+        if (field["@element"] == "contributor" and "@qualifier" in field and field["@qualifier"]
+                in ["author", "advisor"] and "#text" in field):
             if len(field["#text"].split(",")) != 2:
                 continue
             author = split_names_dspace(
@@ -290,8 +296,9 @@ def parse_dspace(
                                 "WARNING:dspace_works: doi already assigned and it is different, leaving it as it is."
                             )
                             print(
-                                f"WARNING:dspace_works: {reg['_id']} with doi {entry['doi']} and doi {doi}"
-                            )
+                                f"WARNING: dspace_works: {
+                                    reg['_id']} with doi {
+                                    entry['doi']} and doi {doi}")
                         else:
                             entry["doi"] = doi
                         entry["external_ids"].append(
@@ -329,34 +336,28 @@ def parse_dspace(
                     print("WARNING: #text not found in external_ids \n",
                           field, reg["_id"])
                 else:
-                    if "external_ids" not in entry["source"]:
-                        entry["source"]["external_ids"] = []
-                    entry["source"]["external_ids"] = [
+                    entry["source"].setdefault("external_ids", []).append(
                         {
                             "provenance": "dspace",
                             "source": field["@qualifier"],
                             "id": field["#text"],
                         }
-                    ]
+                    )
 
     # ids
     entry["external_ids"].append(
         {"provenance": "dspace", "source": "dspace", "id": reg["_id"]}
     )
-    entry["external_ids"].append(
-        {
-            "provenance": "dspace",
-            "source": "dspace",
-            "id": get_dspace_url(reg["_id"], base_url),
-        }
-    )
-    entry["external_ids"].append(
-        {
-            "provenance": "dspace",
-            "source": "oaipmh",
-            "id": get_oai_pmh_url(reg),
-        }
-    )
+    public_url = get_dspace_url(reg, base_url)
+    if public_url:
+        entry["external_urls"].append(
+            {"provenance": "dspace", "source": "dspace", "url": public_url}
+        )
+    oai_pmh_url = get_oai_pmh_url(reg)
+    if oai_pmh_url:
+        entry["external_urls"].append(
+            {"provenance": "dspace", "source": "oaipmh", "url": oai_pmh_url}
+        )
     entry["thesis"] = thesis
     entry["author_count"] = len(entry["authors"])
     return entry

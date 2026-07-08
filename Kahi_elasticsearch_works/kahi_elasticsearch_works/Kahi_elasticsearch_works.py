@@ -1,4 +1,5 @@
 from kahi.KahiBase import KahiBase
+from elasticsearch import Elasticsearch, VERSION as ES_VERSION
 from pymongo import MongoClient
 from math import isnan
 
@@ -25,22 +26,30 @@ class Kahi_elasticsearch_works(KahiBase):
 
         self.index = config["elasticsearch_works"]["es_index"]
 
-        self.debug = config["elasticsearch_works"]["debug"]
+        self.debug = config["elasticsearch_works"].get("debug", False)
+
+        self.task = config["elasticsearch_works"].get("task")
 
         self.es_url = config["elasticsearch_works"]["es_url"] if "es_url" in config["elasticsearch_works"].keys(
         ) else "http://localhost:9200"
 
-        self.es_client = Similarity(
-            es_index=self.index,
-            es_uri=self.es_url,
-            es_auth=(
-                config["elasticsearch_works"]["es_user"],
-                config["elasticsearch_works"]["es_password"]
-            ),
+        es_auth = (
+            config["elasticsearch_works"]["es_user"],
+            config["elasticsearch_works"]["es_password"]
         )
-
-        self.task = config["elasticsearch_works"]["task"] if "task" in config["elasticsearch_works"].keys(
-        ) else None
+        if self.task == "delete":
+            auth_parameter = (
+                {"basic_auth": es_auth}
+                if ES_VERSION[0] >= 8
+                else {"http_auth": es_auth}
+            )
+            self.es_client = Elasticsearch(self.es_url, **auth_parameter)
+        else:
+            self.es_client = Similarity(
+                es_index=self.index,
+                es_uri=self.es_url,
+                es_auth=es_auth,
+            )
 
         self.verbose = config["elasticsearch_works"]["verbose"] if "verbose" in config["elasticsearch_works"].keys(
         ) else 0
@@ -61,8 +70,8 @@ class Kahi_elasticsearch_works(KahiBase):
                 "year": "",
                 "volume": "",
                 "issue": "",
-                "start_page": "",
-                "end_page": "",
+                "page_start": "",
+                "page_end": "",
                 "authors": [],
                 "provenance": "elasticsearch",
 
@@ -72,21 +81,24 @@ class Kahi_elasticsearch_works(KahiBase):
             if not reg["titles"]:
                 continue
             work["title"] = reg["titles"][0]["title"]
-            if "name" in reg["source"].keys():
-                work["source"] = reg["source"]["name"] if reg["source"]["name"] else ""
+            source = reg.get("source") or {}
+            if "name" in source:
+                work["source"] = source["name"] if source["name"] else ""
             if "year_published" in reg.keys():
                 work["year"] = reg["year_published"] if reg["year_published"] else ""
-            if "volume" in reg["bibliographic_info"].keys():
-                work["volume"] = reg["bibliographic_info"]["volume"] if reg["bibliographic_info"]["volume"] else ""
-            if "issue" in reg["bibliographic_info"].keys():
-                work["issue"] = reg["bibliographic_info"]["issue"] if reg["bibliographic_info"]["issue"] else ""
-            if "start_page" in reg["bibliographic_info"].keys():
-                work["start_page"] = reg["bibliographic_info"]["start_page"] if reg["bibliographic_info"]["start_page"] else ""
-            if "end_page" in reg["bibliographic_info"].keys():
-                work["end_page"] = reg["bibliographic_info"]["end_page"] if reg["bibliographic_info"]["end_page"] else ""
+            bibliographic_info = reg.get("bibliographic_info") or {}
+            if "volume" in bibliographic_info:
+                work["volume"] = bibliographic_info["volume"] or ""
+            if "issue" in bibliographic_info:
+                work["issue"] = bibliographic_info["issue"] or ""
+            if "start_page" in bibliographic_info:
+                work["page_start"] = bibliographic_info["start_page"] or ""
+            if "end_page" in bibliographic_info:
+                work["page_end"] = bibliographic_info["end_page"] or ""
             authors = []
-            for author in reg["authors"]:
-                authors.append(author["full_name"])
+            for author in reg.get("authors", []):
+                if author.get("full_name"):
+                    authors.append(author["full_name"])
                 if len(authors) == 5:
                     break
             work["authors"] = authors
@@ -112,7 +124,10 @@ class Kahi_elasticsearch_works(KahiBase):
                     print(f"""{i + 1} entries inserted""")
 
     def delete(self):
-        self.es_client.delete_index(self.index)
+        self.es_client.indices.delete(
+            index=self.index,
+            ignore_unavailable=True
+        )
 
     def run(self):
         if self.task == "bulk_insert":

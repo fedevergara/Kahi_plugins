@@ -86,7 +86,8 @@ def reconcile_author_id(collection, colav_reg, author_db):
             author["id"] = author_db["_id"]
             changed = True
         if author.get("full_name") != author_db.get("full_name"):
-            author["full_name"] = author_db.get("full_name", author.get("full_name", ""))
+            author["full_name"] = author_db.get(
+                "full_name", author.get("full_name", ""))
             changed = True
 
     if changed:
@@ -97,7 +98,13 @@ def reconcile_author_id(collection, colav_reg, author_db):
     return changed
 
 
-def process_one_update(openadata_reg, colav_reg, db, collection, empty_project, verbose=0):
+def process_one_update(
+        openadata_reg,
+        colav_reg,
+        db,
+        collection,
+        empty_project,
+        verbose=0):
     """
     Method to update a register in the kahi database from minciencias opendata database if it is found.
     This means that the register is already on the kahi database and it is being updated with new information.
@@ -120,11 +127,14 @@ def process_one_update(openadata_reg, colav_reg, db, collection, empty_project, 
     """
     entry = parse_minciencias_opendata(
         openadata_reg, empty_project.copy(), verbose=verbose)
+    if entry is None:
+        return
     minciencias_author = ""
     if "authors" in entry.keys():
         if entry["authors"]:
             minciencias_author = entry["authors"][0]
-    author_db = find_author_by_cod_rh(db, get_cod_rh(minciencias_author)) if minciencias_author else None
+    author_db = find_author_by_cod_rh(db, get_cod_rh(
+        minciencias_author)) if minciencias_author else None
     # updated
     for upd in colav_reg["updated"]:
         if upd["source"] == "minciencias":
@@ -150,13 +160,16 @@ def process_one_update(openadata_reg, colav_reg, db, collection, empty_project, 
             colav_reg["types"].append(typ)
     if minciencias_author:
         author_found = False
-        if "external_ids" in minciencias_author.keys() and minciencias_author["affiliations"]:
+        if "external_ids" in minciencias_author.keys(
+        ) and minciencias_author["affiliations"]:
             for ext in minciencias_author["external_ids"]:
-                cod_rh = ext["id"].get("COD_RH") if isinstance(ext["id"], dict) else ext["id"]
+                cod_rh = ext["id"].get("COD_RH") if isinstance(
+                    ext["id"], dict) else ext["id"]
                 author_db = find_author_by_cod_rh(db, cod_rh)
                 if not author_db:
                     print(
-                        f"WARNING: author not found in db with external id {ext['id']}")
+                        f"WARNING: author found not in db with external id {
+                            ext['id']}")
                 if author_db:
                     group_id = minciencias_author["affiliations"][0]['external_ids'][0]['id']
 
@@ -168,9 +181,10 @@ def process_one_update(openadata_reg, colav_reg, db, collection, empty_project, 
                             if author_db["_id"] != author["id"]:
                                 continue
                             # Adding group to existing author in colav register
-                            author_affiliations = [str(aff['id'])
-                                                   for aff in author['affiliations']]
-                            if str(affiliations_db["_id"]) not in author_affiliations:
+                            author_affiliations = [
+                                str(aff['id']) for aff in author['affiliations']]
+                            if str(
+                                    affiliations_db["_id"]) not in author_affiliations:
                                 author["affiliations"].append(
                                     {
                                         "id": affiliations_db["_id"],
@@ -195,23 +209,28 @@ def process_one_update(openadata_reg, colav_reg, db, collection, empty_project, 
                                         print(
                                             f"WARNING: author with id '' found in colav register: {author}")
                                     continue
-                                # only the name can be compared, because we dont have the affiliation of the author from the paper in author_others
+                                # only the name can be compared, because we
+                                # dont have the affiliation of the author from
+                                # the paper in author_others
                                 author_reg = db['person'].find_one(
-                                    # this is required to get  first_names and last_names
+                                    # this is required to get  first_names and
+                                    # last_names
                                     {'_id': author['id']}, {"_id": 1, "full_name": 1, "first_names": 1, "last_names": 1, "initials": 1})
 
                                 name_match = compare_author(
-                                    author_reg, author_db)
-                                # If the author matches, replace the id and full_name of the record in process so as not to break the aggregation of affiliations.
+                                    author_reg, author_db, len(colav_reg["authors"]))
+                                # If the author matches, replace the id and
+                                # full_name of the record in process so as not
+                                # to break the aggregation of affiliations.
                                 if name_match:
                                     author["id"] = author_db["_id"]
                                     author["full_name"] = author_db["full_name"]
 
                                 if author['affiliations']:
-                                    affiliations_person = [str(aff['id'])
-                                                           for aff in author_db['affiliations']]
-                                    author_affiliations = [str(aff['id'])
-                                                           for aff in author['affiliations']]
+                                    affiliations_person = [
+                                        str(aff['id']) for aff in author_db['affiliations']]
+                                    author_affiliations = [
+                                        str(aff['id']) for aff in author['affiliations']]
                                     affiliation_match = any(
                                         affil in author_affiliations for affil in affiliations_person)
                                 if name_match and affiliation_match:
@@ -253,7 +272,7 @@ def process_one_update(openadata_reg, colav_reg, db, collection, empty_project, 
                 {"id": rgroup["_id"], "name": rgroup["names"][0]["name"]})
 
         # Adding group relation affiliation to the author affiliations
-        if author_db and rgroup["relations"]:
+        if author_db and rgroup.get("relations"):
             for author in colav_reg["authors"]:
                 if author["id"] == author_db["_id"]:
                     affs = [aff["id"] for aff in author["affiliations"]]
@@ -286,7 +305,13 @@ def process_one_update(openadata_reg, colav_reg, db, collection, empty_project, 
     )
 
 
-def process_one_insert(openadata_reg, db, collection, empty_project, es_handler, verbose=0):
+def process_one_insert(
+        openadata_reg,
+        db,
+        collection,
+        empty_project,
+        es_handler,
+        verbose=0):
     """
     Function to insert a new register in the database if it is not found in the colav(kahi projects) database.
     This means that the register is not on the database and it is being inserted.
@@ -314,6 +339,9 @@ def process_one_insert(openadata_reg, db, collection, empty_project, es_handler,
     """
     # parse
     entry = parse_minciencias_opendata(openadata_reg, empty_project.copy())
+    if entry is None:
+        return
+    author_db = None
     # search authors and affiliations in db
     # authors
     minciencias_author = ""
@@ -339,28 +367,29 @@ def process_one_insert(openadata_reg, db, collection, empty_project, es_handler,
                                     {
                                         "id": affiliations_db["_id"] if affiliations_db else None,
                                         "name": affiliations_db["names"][0]["name"].strip() if affiliations_db else None,
-                                        "types": affiliations_db["types"] if affiliations_db else None
-                                    }
-                                )
-                                if len(entry['authors'][0]["affiliations"]) > 1:
+                                        "types": affiliations_db["types"] if affiliations_db else None})
+                                if len(
+                                        entry['authors'][0]["affiliations"]) > 1:
                                     entry['authors'][0]["affiliations"].pop(0)
                                 if verbose > 4:
-                                    print("group added to author: {}".format(
-                                        affiliations_db["names"][0]["name"] if affiliations_db else None))
+                                    print(
+                                        "group added to author: {}".format(
+                                            affiliations_db["names"][0]["name"] if affiliations_db else None))
                                 break
             del entry["authors"][0]["external_ids"]
 
         else:
             if verbose > 4:
                 print("No author data")
-    if entry["authors"][0]["full_name"] == "":
+    if entry.get("authors") and entry["authors"][0].get("full_name") == "":
         del entry["authors"][0]  # this is an empty author, so it is removed
 
     entry["author_count"] = len(entry["authors"])
 
     # group
-    group_id = openadata_reg["cod_grupo_gr"]
-    rgroup = db["affiliations"].find_one({"external_ids.id": group_id})
+    group_id = openadata_reg.get("cod_grupo_gr")
+    rgroup = db["affiliations"].find_one(
+        {"external_ids.id": group_id}) if group_id else None
     if rgroup:
         found = False
         for group in entry["groups"]:
@@ -372,7 +401,7 @@ def process_one_insert(openadata_reg, db, collection, empty_project, es_handler,
                 {"id": rgroup["_id"], "name": rgroup["names"][0]["name"]})
 
         # Adding group relation affiliation to the author affiliations
-        if author_db and rgroup["relations"]:
+        if author_db and rgroup.get("relations"):
             for author in entry["authors"]:
                 if author["id"] == author_db["_id"]:
                     affs = [aff["id"] for aff in author["affiliations"]]
@@ -393,7 +422,11 @@ def process_one_insert(openadata_reg, db, collection, empty_project, es_handler,
                     break
 
     # insert in mongo
-    collection.insert_one(entry)
+    product_id = openadata_reg.get("id_producto_pd")
+    collection.update_one(
+        {"external_ids": {"$elemMatch": {"source": "minciencias", "id": product_id}}},
+        {"$setOnInsert": entry}, upsert=True,
+    )
 
 
 def str_normilize(word):
@@ -426,7 +459,15 @@ def check_work(title_work, authors, response, thresholds):
     return False
 
 
-def process_one(openadata_reg, db, collection, empty_work, es_handler, insert_all, thresholds, verbose=0):
+def process_one(
+        openadata_reg,
+        db,
+        collection,
+        empty_work,
+        es_handler,
+        insert_all,
+        thresholds,
+        verbose=0):
     """
     Function to process a single register from the minciencias opendata database.
     This function is used to insert or update a register in the colav(kahi projects) database.
@@ -450,6 +491,9 @@ def process_one(openadata_reg, db, collection, empty_work, es_handler, insert_al
     verbose : int, optional
         Verbosity level. The default is 0.
     """
+    if not isinstance(openadata_reg.get("nme_producto_pd"),
+                      str) or not openadata_reg["nme_producto_pd"].strip():
+        return
     # type id verification
     if "id_producto_pd" in openadata_reg.keys():
         if openadata_reg["id_producto_pd"]:

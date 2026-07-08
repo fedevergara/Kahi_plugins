@@ -1,9 +1,9 @@
 from kahi.KahiBase import KahiBase
-from pymongo import MongoClient, TEXT
-from pymongo.errors import DuplicateKeyError, OperationFailure
+from pymongo import ASCENDING, MongoClient, TEXT
 from joblib import Parallel, delayed
 from kahi_openalex_works.process_one import process_one
 from mohan.Similarity import Similarity
+from threading import BoundedSemaphore
 
 
 class Kahi_openalex_works(KahiBase):
@@ -46,20 +46,21 @@ class Kahi_openalex_works(KahiBase):
         self.collection.create_index("authors.affiliations.id")
         self.collection.create_index("authors.id")
         self.collection.create_index([("titles.title", TEXT)])
-        try:
-            self.collection.create_index(
-                [("external_ids.source", 1), ("external_ids.id", 1)],
-                name="external_ids_source_id_1_unique_openalex_partial",
-                unique=True,
-                partialFilterExpression={
-                    "external_ids.source": "openalex"
-                }
-            )
-        except (DuplicateKeyError, OperationFailure) as exc:
-            raise RuntimeError(
-                "Cannot create unique index external_ids_source_id_1_unique_openalex_partial in works. "
-                "Please deduplicate OpenAlex external_ids and retry."
-            ) from exc
+        # DOI and other identifier lookups only constrain external_ids.id, so
+        # the compound OpenAlex identity index below cannot serve them.
+        self.collection.create_index("external_ids.id")
+        # Used as a fallback when an OpenAlex author identifier is not present.
+        self.db["person"].create_index("full_name")
+        # A partial multikey index filters whole documents, not individual
+        # external_ids elements. The former unique index therefore enforced
+        # uniqueness on MAG, DOI and other identifiers as well as OpenAlex.
+        legacy_index = "external_ids_source_id_1_unique_openalex_partial"
+        if legacy_index in self.collection.index_information():
+            self.collection.drop_index(legacy_index)
+        self.collection.create_index(
+            [("external_ids.source", 1), ("external_ids.id", 1)],
+            name="external_ids_source_id_1",
+        )
 
         self.openalex_client = MongoClient(
             config["openalex_works"]["database_url"])
@@ -96,36 +97,85 @@ class Kahi_openalex_works(KahiBase):
         self.backend = "threading" if "backend" not in config[
             "openalex_works"].keys() else config["openalex_works"]["backend"]
 
+        self.es_semaphore = None
+        if self.backend == "threading" and self.es_handler is not None:
+            es_max_concurrency = config["openalex_works"].get(
+                "es_max_concurrency", 10)
+            if es_max_concurrency < 1:
+                raise ValueError(
+                    "openalex_works.es_max_concurrency must be greater than zero")
+            self.es_semaphore = BoundedSemaphore(es_max_concurrency)
+
     def process_openalex(self):
         # selects papers with doi according to task variable
         if self.task == "doi":
-            paper_cursor = self.openalex_collection.find(
-                {"doi": {"$ne": None}, "title": {"$ne": None}, "type": {"$ne": "grant"}})
-            count = self.openalex_collection.count_documents(
-                {"doi": {"$ne": None}, "title": {"$ne": None}, "type": {"$ne": "grant"}})
+            query = {
+                "doi": {"$ne": None},
+                "title": {"$type": "string", "$regex": r"\S"},
+                "type": {"$ne": "grant"},
+            }
+            count = self.openalex_collection.count_documents(query)
             print(f"INFO: proccesing {count} works with DOI")
         else:
-            paper_cursor = list(self.openalex_collection.find(
-                {"doi": {"$eq": None}, "title": {"$ne": None}, "type": {"$ne": "grant"}}))
-            count = self.openalex_collection.count_documents(
-                {"doi": {"$eq": None}, "title": {"$ne": None}, "type": {"$ne": "grant"}})
+            query = {
+                "doi": {"$eq": None},
+                "title": {"$type": "string", "$regex": r"\S"},
+                "type": {"$ne": "grant"},
+            }
+            count = self.openalex_collection.count_documents(query)
             print(f"INFO: proccesing {count} works without DOI")
 
-        Parallel(
-            n_jobs=self.n_jobs,
-            verbose=self.verbose,
-            backend=self.backend,
-            batch_size=10)(
-            delayed(process_one)(
-                paper,
-                self.config,
-                self.empty_work(),
-                self.client if self.backend == "threading" else None,
-                self.es_handler if self.backend == "threading" else None,
-                self.backend,
-                verbose=self.verbose
-            ) for paper in paper_cursor
-        )
+        page_size = self.config["openalex_works"].get(
+            "page_size", max(self.n_jobs * 2, 100))
+        if page_size < 1:
+            raise ValueError("openalex_works.page_size must be greater than zero")
+
+        def paginated_papers():
+            last_id = None
+            loaded = 0
+            while True:
+                page_query = dict(query)
+                if last_id is not None:
+                    page_query["_id"] = {"$gt": last_id}
+                page = list(
+                    self.openalex_collection.find(page_query)
+                    .sort("_id", ASCENDING)
+                    .hint("_id_")
+                    .limit(page_size)
+                )
+                if not page:
+                    return
+
+                last_id = page[-1]["_id"]
+                loaded += len(page)
+                if self.verbose > 0 and (
+                        loaded % (page_size * 10) == 0 or loaded == count):
+                    print(f"INFO: loaded {loaded}/{count} works")
+                yield from page
+
+        with Parallel(
+                n_jobs=self.n_jobs,
+                verbose=self.verbose,
+                backend=self.backend,
+                return_as="generator_unordered",
+                batch_size=10) as parallel:
+            results = parallel(
+                delayed(process_one)(
+                    paper,
+                    self.config,
+                    self.empty_work(),
+                    self.client if self.backend == "threading" else None,
+                    self.es_handler if self.backend == "threading" else None,
+                    self.backend,
+                    verbose=self.verbose,
+                    es_semaphore=self.es_semaphore,
+                )
+                for paper in paginated_papers()
+            )
+            # Consume results incrementally. process_one writes directly to
+            # MongoDB and returns None, so retaining a result list is wasteful.
+            for _ in results:
+                pass
 
     def run(self):
         self.process_openalex()

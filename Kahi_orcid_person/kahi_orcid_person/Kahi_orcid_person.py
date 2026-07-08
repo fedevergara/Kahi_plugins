@@ -77,18 +77,26 @@ class Kahi_orcid_person(KahiBase):
         dict
             The update fields used to update the document.
         """
-        # Update the document with the new fields only if scienti is not in the person updated record
-        updated_sources = [
-            update["source"] for update in person_reg.get("updated", [])
-        ]
-        if "scienti" in updated_sources:
-            update_operation = {
-                "$push": {"updated": {"source": "orcid", "time": int(time())}}}
-        else:
-            update_operation = {
-                "$set": update_fields,
-                "$push": {"updated": {"source": "orcid", "time": int(time())}}
+        update_operation = {
+            "$addToSet": {
+                "updated": {"source": "orcid", "time": int(time())}
             }
+        }
+        set_fields = {
+            field: value
+            for field, value in update_fields.items()
+            if field != "aliases" and value and not person_reg.get(field)
+        }
+        if set_fields:
+            update_operation["$set"] = set_fields
+
+        aliases = list(update_fields.get("aliases", []))
+        incoming_name = update_fields.get("full_name", "")
+        if incoming_name and incoming_name != person_reg.get("full_name"):
+            aliases.append(incoming_name)
+        aliases = list(dict.fromkeys(alias for alias in aliases if alias))
+        if aliases:
+            update_operation["$addToSet"]["aliases"] = {"$each": aliases}
 
         result = person_collection.update_one(query, update_operation)
         if self.verbose > 0:
@@ -208,8 +216,9 @@ class Kahi_orcid_person(KahiBase):
         person_reg = person_collection.find_one(query)
         if person_reg:
             return self.process_one_update(person_reg, query, update_fields, person_collection, orcid)
-        else:
+        elif full_name:
             return self.process_one_insert(person_reg, query, update_fields, person_collection, empty_person, orcid)
+        return None
 
     def process_orcid(self):
         """

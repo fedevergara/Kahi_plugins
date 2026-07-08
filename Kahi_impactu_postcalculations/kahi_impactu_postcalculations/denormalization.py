@@ -752,15 +752,9 @@ def set_works_authors_affiliations_dates(collection) -> None:
         {
             "$lookup": {
                 "from": "person",
-                "let": {"authorIds": "$authors.id"},
+                "localField": "authors.id",
+                "foreignField": "_id",
                 "pipeline": [
-                    {
-                        "$match": {
-                            "$expr": {
-                                "$in": ["$_id", "$$authorIds"]
-                            }
-                        }
-                    },
                     {
                         "$project": {
                             "_id": 0,
@@ -1072,28 +1066,9 @@ def set_works_authors_affiliations_external_data(collection) -> None:
         {
             "$lookup": {
                 "from": "affiliations",
-                "let": {
-                    "aff_ids": {
-                        "$reduce": {
-                            "input": "$authors",
-                            "initialValue": [],
-                            "in": {
-                                "$setUnion": [
-                                    "$$value",
-                                    "$$this.affiliations.id",
-                                ]
-                            },
-                        }
-                    }
-                },
+                "localField": "authors.affiliations.id",
+                "foreignField": "_id",
                 "pipeline": [
-                    {
-                        "$match": {
-                            "$expr": {
-                                "$in": ["$_id", "$$aff_ids"]
-                            }
-                        }
-                    },
                     {
                         "$project": {
                             "id": "$_id",
@@ -1231,17 +1206,9 @@ def set_works_groups_citations_count(collection) -> None:
         {
             "$lookup": {
                 "from": "affiliations",
-                "let": {
-                    "groupId": "$groups.id",
-                },
+                "localField": "groups.id",
+                "foreignField": "_id",
                 "pipeline": [
-                    {
-                        "$match": {
-                            "$expr": {
-                                "$eq": ["$_id", "$$groupId"],
-                            }
-                        }
-                    },
                     {
                         "$match": {
                             "types.type": "group",
@@ -1320,23 +1287,9 @@ def set_works_groups_ranking_to_works_collection(collection) -> None:
         {
             "$lookup": {
                 "from": "affiliations",
-                "let": {
-                    "group_ids": {
-                        "$map": {
-                            "input": "$groups",
-                            "as": "g",
-                            "in": "$$g.id",
-                        }
-                    }
-                },
+                "localField": "groups.id",
+                "foreignField": "_id",
                 "pipeline": [
-                    {
-                        "$match": {
-                            "$expr": {
-                                "$in": ["$_id", "$$group_ids"]
-                            }
-                        }
-                    },
                     {
                         "$project": {
                             "id": "$_id",

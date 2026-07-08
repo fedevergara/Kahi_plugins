@@ -51,8 +51,9 @@ class Kahi_minciencias_opendata_patents(KahiBase):
             es_index = config["minciencias_opendata_patents"]["es_index"]
             es_url = config["minciencias_opendata_patents"]["es_url"]
             if config["minciencias_opendata_patents"]["es_user"] and config["minciencias_opendata_patents"]["es_password"]:
-                es_auth = (config["minciencias_opendata_patents"]["es_user"],
-                           config["minciencias_opendata_patents"]["es_password"])
+                es_auth = (
+                    config["minciencias_opendata_patents"]["es_user"],
+                    config["minciencias_opendata_patents"]["es_password"])
             else:
                 es_auth = None
             self.es_handler = Similarity(
@@ -117,29 +118,34 @@ class Kahi_minciencias_opendata_patents(KahiBase):
         patents = ["Patente de invención", "Patente modelo de utilidad"]
 
         pipeline = [
-            {'$match': {"nme_producto_pd": {"$exists": True}}},
+            {'$match': {"nme_producto_pd": {"$type": "string", "$ne": ""}}},
             {'$match': {'nme_tipologia_pd': {'$in': patents}}},
             {'$group': {'_id': '$id_producto_pd', 'originalDoc': {'$first': '$$ROOT'}}},
             {'$replaceRoot': {'newRoot': '$originalDoc'}}
         ]
-        project_list = list(opendata.aggregate(pipeline, allowDiskUse=True))
-        print(
-            f"INFO: Processing patents production {len(project_list)} catgories {patents}")
-        Parallel(
-            n_jobs=self.n_jobs,
-            verbose=self.verbose,
-            backend="threading")(
-            delayed(process_one)(
-                project,
-                self.db,
-                self.collection,
-                self.empty_patent(),
-                None,  # ES not implemented yet
-                insert_all=self.insert_all,
-                thresholds=self.thresholds,
-                verbose=self.verbose
-            ) for project in project_list
-        )
+        cursor = opendata.aggregate(
+            pipeline, allowDiskUse=True, batchSize=1000)
+        print(f"INFO: Processing patent categories {patents}")
+        try:
+            results = Parallel(
+                n_jobs=self.n_jobs,
+                verbose=self.verbose,
+                backend="threading",
+                pre_dispatch="2*n_jobs",
+                return_as="generator_unordered")(
+                delayed(process_one)(
+                    project,
+                    self.db,
+                    self.collection,
+                    self.empty_patent(),
+                    None,
+                    insert_all=self.insert_all,
+                    thresholds=self.thresholds,
+                    verbose=self.verbose) for project in cursor)
+            for _ in results:
+                pass
+        finally:
+            cursor.close()
         client.close()
 
     def run(self):

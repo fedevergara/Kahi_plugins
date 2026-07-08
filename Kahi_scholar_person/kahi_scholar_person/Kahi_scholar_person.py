@@ -1,4 +1,5 @@
-from kahi_scholar_person.process_one import process_one
+from kahi_scholar_person.parser import parse_scholar
+from kahi_scholar_person.process_one import external_scholar_id, merge_author_entries, process_one
 from kahi.KahiBase import KahiBase
 from pymongo import MongoClient, TEXT
 from joblib import Parallel, delayed
@@ -43,12 +44,17 @@ class Kahi_scholar_person(KahiBase):
             config["scholar_person"]["database_url"])
         if config["scholar_person"]["database_name"] not in self.scholar_client.list_database_names():
             raise ValueError(
-                f"Database {config['scholar_person']['database_name']} not found in {config['scholar_person']['database_url']}")
+                f"Database {
+                    config['scholar_person']['database_name']} found not in {
+                    config['scholar_person']['database_url']}")
         self.scholar_db = self.scholar_client[config["scholar_person"]
                                               ["database_name"]]
         if config["scholar_person"]["collection_name"] not in self.scholar_db.list_collection_names():
             raise ValueError(
-                f"Collection {config['scholar_person']['database_name']}.{config['scholar_person']['collection_name']} not found in {config['scholar_person']['database_url']}")
+                f"Collection {
+                    config['scholar_person']['database_name']}.{
+                    config['scholar_person']['collection_name']} found not in {
+                    config['scholar_person']['database_url']}")
         self.scholar_collection = self.scholar_db[config["scholar_person"]
                                                   ["collection_name"]]
 
@@ -63,7 +69,28 @@ class Kahi_scholar_person(KahiBase):
 
         We use the process_one function to process each paper in parallel.
         """
-        paper_cursor = self.scholar_collection.find()
+        paper_cursor = self.scholar_collection.find(
+            {},
+            {"author": 1, "profiles": 1, "cid": 1, "doi": 1},
+        )
+
+        authors_by_id = {}
+        empty_person = self.empty_person()
+        for paper in paper_cursor:
+            for author in parse_scholar(
+                    paper, empty_person, verbose=self.verbose):
+                scholar_id = external_scholar_id(author)
+                if not scholar_id:
+                    continue
+                if scholar_id in authors_by_id:
+                    merge_author_entries(authors_by_id[scholar_id], author)
+                else:
+                    authors_by_id[scholar_id] = author
+
+        if self.verbose:
+            print(
+                f"INFO: Processing {
+                    len(authors_by_id)} unique Scholar profiles")
 
         client = MongoClient(self.mongodb_url)
         db = client[self.config["database_name"]]
@@ -73,12 +100,10 @@ class Kahi_scholar_person(KahiBase):
             verbose=self.verbose,
             backend="threading")(
             delayed(process_one)(
-                paper,
-                db,
+                author,
                 collection,
-                self.empty_person(),
                 verbose=self.verbose
-            ) for paper in paper_cursor
+            ) for author in authors_by_id.values()
         )
         client.close()
 

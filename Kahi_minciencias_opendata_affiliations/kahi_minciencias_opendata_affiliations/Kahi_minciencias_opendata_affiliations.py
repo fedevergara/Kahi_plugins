@@ -1,10 +1,13 @@
 from kahi_impactu_utils.Utils import check_date_format
-from pymongo import MongoClient, TEXT
+from pymongo import MongoClient, ASCENDING, DESCENDING, TEXT
+from pymongo.errors import DuplicateKeyError
 from joblib import Parallel, delayed
 from datetime import datetime as dt
 from kahi.KahiBase import KahiBase
 from unidecode import unidecode
 from thefuzz import fuzz
+from copy import deepcopy
+import hashlib
 from time import time
 import re
 
@@ -48,6 +51,10 @@ class Kahi_minciencias_opendata_affiliations(KahiBase):
 
         self.openadata_collection = self.openadata_db[
             config["minciencias_opendata_affiliations"]["collection_name"]]
+        self.openadata_collection.create_index(
+            [("cod_grupo_gr", ASCENDING), ("ano_convo", DESCENDING)],
+            name="cod_grupo_gr_1_ano_convo_-1",
+        )
 
         self.n_jobs = config["minciencias_opendata_affiliations"]["num_jobs"] if "num_jobs" in config["minciencias_opendata_affiliations"].keys(
         ) else 1
@@ -147,6 +154,94 @@ class Kahi_minciencias_opendata_affiliations(KahiBase):
         if not name and institution.get("names"):
             name = institution["names"][0].get("name", "")
         return name
+
+    def aval_institution_id(self, inst_aval):
+        digest = hashlib.sha1(inst_aval.encode("utf-8")).hexdigest()[:6]
+        return "IUA{}".format(digest)
+
+    def affiliation_address_from_group(self, reg):
+        return {
+            "lat": "",
+            "lng": "",
+            "postcode": "",
+            "state": reg.get("nme_departamento_gr", ""),
+            "city": reg.get("nme_municipio_gr", ""),
+            "country": "Colombia",
+            "country_code": "CO"
+        }
+
+    def affiliation_address_from_institution(self, institution, reg):
+        addresses = institution.get("addresses", [])
+        if not addresses:
+            return self.affiliation_address_from_group(reg)
+        return {
+            "lat": addresses[0].get("lat", None),
+            "lng": addresses[0].get("lng", None),
+            "postcode": addresses[0].get("postcode", None),
+            "state": addresses[0].get("state", None),
+            "city": addresses[0].get("city", None),
+            "country": addresses[0].get("country", None),
+            "country_code": addresses[0].get("country_code", None)
+        }
+
+    def append_unique(self, values, item):
+        if item not in values:
+            values.append(item)
+
+    def get_or_create_aval_institution(self, inst_aval, collection, reg):
+        inst_aval = inst_aval.strip()
+        if not inst_aval:
+            return None
+
+        institution = self.find_matching_institution(inst_aval)
+        if institution:
+            return institution
+
+        institution_id = self.aval_institution_id(inst_aval)
+        existing = collection.find_one({"_id": institution_id})
+        if existing:
+            return existing
+
+        entry = self.empty_affiliation()
+        entry["_id"] = institution_id
+        entry["updated"].append({"source": "minciencias", "time": int(time())})
+        entry["names"].append(
+            {"source": "minciencias", "lang": "es", "name": inst_aval})
+        entry["types"].append({"source": "minciencias", "type": "other"})
+        entry["addresses"].append(self.affiliation_address_from_group(reg))
+        entry["external_ids"].append(
+            {"source": "minciencias", "id": institution_id})
+
+        try:
+            collection.insert_one(entry)
+        except DuplicateKeyError:
+            pass
+        return collection.find_one({"_id": institution_id})
+
+    def add_aval_institution_relations(self, reg, entry, collection):
+        if "inst_aval" not in reg:
+            return
+
+        for inst_aval in reg["inst_aval"].split("|"):
+            institution = self.get_or_create_aval_institution(
+                inst_aval, collection, reg)
+            if institution:
+                relation = {
+                    "types": institution.get("types", []),
+                    "id": institution["_id"],
+                    "name": self.get_institution_name(institution)
+                }
+                if not any(rel.get("id") == relation["id"] for rel in entry["relations"]):
+                    entry["relations"].append(relation)
+                self.append_unique(
+                    entry["addresses"],
+                    self.affiliation_address_from_institution(institution, reg),
+                )
+            else:
+                self.append_unique(
+                    entry["addresses"],
+                    self.affiliation_address_from_group(reg),
+                )
 
     def institution_candidate_names(self, institution):
         names = []
@@ -264,10 +359,9 @@ class Kahi_minciencias_opendata_affiliations(KahiBase):
             if db_reg:
                 if idgr not in self.inserted_cod_grupo:
                     self.inserted_cod_grupo.append(idgr)
-                if "minciencias" in [idx["source"] for idx in db_reg["updated"]]:
-                    return
-                db_reg["updated"].append(
-                    {"time": int(time()), "source": "minciencias"})
+                if "minciencias" not in [idx["source"] for idx in db_reg["updated"]]:
+                    db_reg["updated"].append(
+                        {"time": int(time()), "source": "minciencias"})
                 if not db_reg["year_established"]:
                     date_established = check_date_format(
                         reg["fcreacion_gr"]) if "fcreacion_gr" in reg.keys() else ""
@@ -283,28 +377,25 @@ class Kahi_minciencias_opendata_affiliations(KahiBase):
                         else:
                             aff_db = collection.find_one({"_id": db_reg["relations"][0]["id"]})
                             if aff_db:
-                                db_reg["addresses"].append({
-                                    "lat": aff_db["addresses"][0].get("lat", None),
-                                    "lng": aff_db["addresses"][0].get("lng", None),
-                                    "postcode": aff_db["addresses"][0].get("postcode", None),
-                                    "state": aff_db["addresses"][0].get("state", None),
-                                    "city": aff_db["addresses"][0].get("city", None),
-                                    "country": aff_db["addresses"][0].get("country", None),
-                                    "country_code": aff_db["addresses"][0].get("country_code", None)
-                                })
+                                self.append_unique(
+                                    db_reg["addresses"],
+                                    self.affiliation_address_from_institution(aff_db, reg),
+                                )
+                self.add_aval_institution_relations(reg, db_reg, collection)
                 collection.update_one(
                     {"_id": db_reg["_id"]},
                     {"$set": {
                         "updated": db_reg["updated"],
                         "year_established": db_reg.get("year_established"),
-                        "addresses": db_reg.get("addresses")
+                        "addresses": db_reg.get("addresses"),
+                        "relations": db_reg.get("relations")
                     }}, upsert=True)
                 if verbose > 4:
                     print("Updated group {}".format(idgr))
                 return
 
             self.inserted_cod_grupo.append(idgr)
-            entry = empty_affiliation.copy()
+            entry = deepcopy(empty_affiliation)
             entry["updated"].append(
                 {"source": "minciencias", "time": int(time())})
             entry["names"].append(
@@ -336,34 +427,7 @@ class Kahi_minciencias_opendata_affiliations(KahiBase):
                 ]
             })
 
-            # START AVAL INSTITUTION SECTION
-            if "inst_aval" in reg.keys():
-                for inst_aval in reg["inst_aval"].split("|"):
-                    institution = self.find_matching_institution(inst_aval)
-                    if institution:
-                        name = self.get_institution_name(institution)
-                        entry["relations"].append(
-                            {"types": institution["types"], "id": institution["_id"], "name": name})
-                        entry["addresses"].append({
-                            "lat": institution["addresses"][0].get("lat", None),
-                            "lng": institution["addresses"][0].get("lng", None),
-                            "postcode": institution["addresses"][0].get("postcode", None),
-                            "state": institution["addresses"][0].get("state", None),
-                            "city": institution["addresses"][0].get("city", None),
-                            "country": institution["addresses"][0].get("country", None),
-                            "country_code": institution["addresses"][0].get("country_code", None)
-                        })
-                    else:
-                        entry["addresses"].append({
-                            "lat": "",
-                            "lng": "",
-                            "postcode": "",
-                            "state": reg["nme_departamento_gr"],
-                            "city": reg["nme_municipio_gr"],
-                            "country": "Colombia",
-                            "country_code": "CO"
-                        })
-            # END AVAL INSTITUTION
+            self.add_aval_institution_relations(reg, entry, collection)
             entry_rank = {
                 "source": "minciencias",
                 "rank": reg["nme_clasificacion_gr"] if "nme_clasificacion_gr" in reg.keys() else "",

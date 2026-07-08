@@ -85,7 +85,8 @@ def main():
             'pymongo',
             'pandas',
             'thefuzz',
-            'datetime'
+            'datetime',
+            'beautifulsoup4'
         ],
     )
 

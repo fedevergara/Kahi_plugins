@@ -17,20 +17,25 @@ def parse_siiu(reg, empty_project, verbose=0):
     """
     entry = empty_project.copy()
     entry["updated"] = [{"source": "siiu", "time": int(time())}]
-    if reg["NOMBRE_COMPLETO"]:
-        lang = lang_poll(reg["NOMBRE_COMPLETO"], verbose=verbose)
+    title = reg.get("NOMBRE_COMPLETO")
+    code = reg.get("CODIGO")
+    if not isinstance(title, str) or not title.strip() or code in (None, ""):
+        return None
+    lang = lang_poll(title, verbose=verbose)
     entry["titles"].append(
-        {"title": reg["NOMBRE_COMPLETO"], "lang": lang, "source": "siiu"})
+        {"title": title.strip(), "lang": lang, "source": "siiu"})
     entry["external_ids"].append(
-        {"provenance": "siiu", "source": "codigo", "id": reg["CODIGO"]})
+        {"provenance": "siiu", "source": "codigo", "id": code})
     if "project_participant" in reg:
         for author in reg["project_participant"]:
             # solo investigador principar de momento
-            if author["project_participant_role"][0]["IDENTIFICADOR"] == 307:
+            roles = author.get("project_participant_role") or []
+            person_id = author.get("PERSONA_NATURAL")
+            if roles and roles[0].get("IDENTIFICADOR") == 307 and person_id:
 
                 affiliations = []
-                if "group" in author:
-                    for group in author["group"]:
+                for group in author.get("group") or []:
+                    if group.get("CODIGO_COLCIENCIAS"):
                         grec = {
                             "external_ids": [{"provenance": "siiu", "source": "scienti", "id": group["CODIGO_COLCIENCIAS"]}],
                             "name": group["NOMBRE_COMPLETO"]
@@ -44,35 +49,38 @@ def parse_siiu(reg, empty_project, verbose=0):
                         #         "name": group["NOMBRE_COMPLETO"]
                         #     }
                         # )
-                affiliations.append({
-                    "external_ids": [{"provenance": "siiu", "source": "nit", "id": author["INSTITUCION"]}]
-                })
+                if author.get("INSTITUCION"):
+                    affiliations.append({
+                        "external_ids": [{"provenance": "siiu", "source": "nit", "id": author["INSTITUCION"]}]
+                    })
                 # type
-                if "project_subtype" in reg:
+                subtypes = reg.get("project_subtype") or []
+                project_types = subtypes[0].get("project_type") or [] if subtypes else []
+                if subtypes and project_types:
 
                     entry["types"].append(
                         {
                             "provenance": 'siiu',
                             "source": 'siiu',
-                            "type": reg["project_subtype"][0]["project_type"][0]["NOMBRE"],
+                            "type": project_types[0].get("NOMBRE", ""),
                             "level": 0,
-                            "code": str(reg["project_subtype"][0]["project_type"][0]["IDENTIFICADOR"])
+                            "code": str(project_types[0].get("IDENTIFICADOR", ""))
                         }
                     )
                     entry["types"].append(
                         {
                             "provenance": 'siiu',
                             "source": 'siiu',
-                            "type": reg["project_subtype"][0]["NOMBRE"],
+                            "type": subtypes[0].get("NOMBRE", ""),
                             "level": 1,
-                            "code": str(reg["project_subtype"][0]["project_type"][0]["IDENTIFICADOR"]) + str(reg["project_subtype"][0]["IDENTIFICADOR"])
+                            "code": str(project_types[0].get("IDENTIFICADOR", "")) + str(subtypes[0].get("IDENTIFICADOR", ""))
                         }
                     )
 
                 author_entry = {
                     "full_name": "",
                     "affiliations": affiliations,
-                    "external_ids": [{"provenance": 'siiu', "source": 'Cédula de Ciudadanía', "id": author["PERSONA_NATURAL"]}]
+                    "external_ids": [{"provenance": 'siiu', "source": 'Cédula de Ciudadanía', "id": person_id}]
                 }
                 entry["authors"].append(author_entry)
     return entry
