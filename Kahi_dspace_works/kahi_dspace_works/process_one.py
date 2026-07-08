@@ -441,5 +441,4 @@ def process_one(dspace_reg, affiliation, base_url, db, collection, empty_work,
                     es_semaphore)
         else:
             print(
-                f"WARNING: invalid doi found in dspace record {
-                    dspace_reg['_id']} ")
+                f"WARNING: invalid doi found in dspace record {dspace_reg['_id']} ")

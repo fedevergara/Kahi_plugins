@@ -85,9 +85,8 @@ class Kahi_scholar_works(KahiBase):
             not in self.scholar_client.list_database_names()
         ):
             raise ValueError(
-                f"Database {
-                    config['scholar_works']['database_name']} found not in {
-                    config['scholar_works']['database_url']}")
+                f"Database {config['scholar_works']['database_name']} found not in "
+                f"{config['scholar_works']['database_url']}")
         self.scholar_db = self.scholar_client[config["scholar_works"]
                                               ["database_name"]]
         if (
@@ -95,10 +94,9 @@ class Kahi_scholar_works(KahiBase):
             not in self.scholar_db.list_collection_names()
         ):
             raise ValueError(
-                f"Collection {
-                    config['scholar_works']['database_name']}.{
-                    config['scholar_works']['collection_name']} found not in {
-                    config['scholar_works']['database_url']}")
+                f"Collection {config['scholar_works']['database_name']}."
+                f"{config['scholar_works']['collection_name']} found not in "
+                f"{config['scholar_works']['database_url']}")
         self.scholar_collection = self.scholar_db[
             config["scholar_works"]["collection_name"]
         ]

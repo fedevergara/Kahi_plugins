@@ -200,6 +200,5 @@ class Kahi_post_person_work_cleaning(KahiBase):
         )(delayed(self.process_one)(author) for author in authors)
         total = sum(results)
         print(
-            f"INFO: {
-                'Would relink' if self.dry_run else 'Relinked'} {total} work authors")
+            f"INFO: {'Would relink' if self.dry_run else 'Relinked'} {total} work authors")
         return 0

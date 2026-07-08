@@ -85,20 +85,18 @@ def parse_scholar(
                 except Exception as e:
                     if verbose > 4:
                         print(
-                            f"""Could not cast pages to substract in {
-                                reg["doi"]}""")
+                            f"""Could not cast pages to substract in {reg["doi"]}""")
                         print(e)
             else:
                 if verbose > 4:
                     print(
-                        f"Malformed start_page or end_page in source database for {
-                            reg['doi']}. Setting 'pages' to the original value.")
+                        f"Malformed start_page or end_page in source database for {reg['doi']}. "
+                        "Setting 'pages' to the original value.")
                 entry["bibliographic_info"]["pages"] = page_value
         else:
             if verbose > 4:
                 print(
-                    f"""Malformed pages in source database for {
-                        reg["doi"]}. Inserting anyway""")
+                    f"""Malformed pages in source database for {reg["doi"]}. Inserting anyway""")
             entry["bibliographic_info"]["pages"] = page_value
             entry["bibliographic_info"]["start_page"] = page_value
     if reg.get("bibtex"):

@@ -296,9 +296,7 @@ def parse_dspace(
                                 "WARNING:dspace_works: doi already assigned and it is different, leaving it as it is."
                             )
                             print(
-                                f"WARNING: dspace_works: {
-                                    reg['_id']} with doi {
-                                    entry['doi']} and doi {doi}")
+                                f"WARNING: dspace_works: {reg['_id']} with doi {entry['doi']} and doi {doi}")
                         else:
                             entry["doi"] = doi
                         entry["external_ids"].append(

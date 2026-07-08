@@ -65,9 +65,10 @@ class Kahi_staff_affiliations(KahiBase):
         if unit == "código_unidad_académica":
             _id = f"{institution_id}_{reg['código_unidad_académica']}"
         if unit == "código_subunidad_académica":
-            _id = f"{institution_id}_{
-                reg['código_unidad_académica']}_{
-                reg['código_subunidad_académica']}"
+            _id = (
+                f"{institution_id}_{reg['código_unidad_académica']}_"
+                f"{reg['código_subunidad_académica']}"
+            )
 
         return _id
 

@@ -166,8 +166,7 @@ def process_one_update(
                 author_db = find_author_by_cod_rh(db, cod_rh)
                 if not author_db:
                     print(
-                        f"WARNING: author found not in db with external id {
-                            ext['id']}")
+                        f"WARNING: author found not in db with external id {ext['id']}")
                 if author_db:
                     group_id = minciencias_author["affiliations"][0]['external_ids'][0]['id']
 

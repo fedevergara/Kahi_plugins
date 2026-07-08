@@ -285,9 +285,7 @@ class Kahi_staff_person(KahiBase):
                 else:
                     # Print an error message if the document type is invalid
                     print(
-                        f"ERROR: tipo_documento must be one of {
-                            ', '.join(
-                                document_types.keys())}, not '{doc_type}'")
+                        f"ERROR: tipo_documento must be one of {', '.join(document_types.keys())}, not '{doc_type}'")
 
                 if reg["nombres"].lower() not in entry["aliases"]:
                     entry["aliases"].append(reg["nombres"].lower())

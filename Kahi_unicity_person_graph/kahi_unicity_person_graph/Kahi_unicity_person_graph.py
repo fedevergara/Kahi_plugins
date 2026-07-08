@@ -994,8 +994,7 @@ class Kahi_unicity_person_graph(KahiBase):
         invalid_tasks = set(self.tasks).difference(ID_TASKS | {"doi"})
         if invalid_tasks:
             raise ValueError(
-                f"Unsupported unicity tasks: {
-                    sorted(invalid_tasks)}")
+                f"Unsupported unicity tasks: {sorted(invalid_tasks)}")
         if not self.tasks:
             raise ValueError("At least one unicity task must be configured")
 
@@ -1471,8 +1470,7 @@ class Kahi_unicity_person_graph(KahiBase):
             }
             if current_documents != result.snapshot:
                 raise RuntimeError(
-                    f"Component {
-                        result.component.component_id} changed after discovery")
+                    f"Component {result.component.component_id} changed after discovery")
 
             for plan in applicable_plans:
                 for absorbed_id in plan.absorbed_ids:

@@ -45,8 +45,7 @@ def parse_wos(reg, empty_work, verbose=0):
             except Exception as e:
                 if verbose > 4:
                     print(
-                        f"""Variable Z9 (citations) could not be converted to integer for {
-                            reg["DI"]}""")
+                        f"""Variable Z9 (citations) could not be converted to integer for {reg["DI"]}""")
                     print(e)
                 count = None
             entry["citations_count"].append({"source": "wos", "count": count})
@@ -115,8 +114,7 @@ def parse_wos(reg, empty_work, verbose=0):
                 except Exception as e:
                     if verbose > 4:
                         print(
-                            f"""Institution name could not be extracted for {
-                                reg["DI"]}""")
+                            f"""Institution name could not be extracted for {reg["DI"]}""")
                         print(e)
                     instname = ""
                 for author in authors:
@@ -126,8 +124,7 @@ def parse_wos(reg, empty_work, verbose=0):
                             name, rid = res.split("/")[-2:]
                         except Exception as e:
                             print(
-                                f"""{
-                                    reg["DI"]} does not provide researcherid """)
+                                f"""{reg["DI"]} does not provide researcherid """)
                             print(e)
                         ratio = fuzz.partial_ratio(name, author)
                         if ratio > 90:
@@ -288,8 +285,7 @@ def process_one(wos_reg, db, collection, empty_work, verbose=0):
                 if len(entry["source"]["external_ids"]) == 0:
                     if verbose > 4:
                         print(
-                            f'Register with doi: {
-                                wos_reg["DI"]} does not provide a source')
+                            f'Register with doi: {wos_reg["DI"]} does not provide a source')
                 else:
                     if verbose > 4:
                         print("No source found for\n\t",
@@ -426,17 +422,15 @@ class Kahi_wos_works(KahiBase):
             config["wos_works"]["database_url"])
         if config["wos_works"]["database_name"] not in self.wos_client.list_database_names():
             raise Exception(
-                f"Database {
-                    config['wos_works']['database_name']} found not in {
-                    config['wos_works']['database_url']}")
+                f"Database {config['wos_works']['database_name']} found not in "
+                f"{config['wos_works']['database_url']}")
         self.wos_db = self.wos_client[config["wos_works"]
                                             ["database_name"]]
         if config["wos_works"]["collection_name"] not in self.wos_db.list_collection_names():
             raise Exception(
-                f"Collection {
-                    config['wos_works']['database_name']}.{
-                    config['wos_works']['collection_name']} found not in {
-                    config['wos_works']['database_url']}")
+                f"Collection {config['wos_works']['database_name']}."
+                f"{config['wos_works']['collection_name']} found not in "
+                f"{config['wos_works']['database_url']}")
         self.wos_collection = self.wos_db[config["wos_works"]
                                                 ["collection_name"]]
 

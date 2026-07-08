@@ -625,11 +625,8 @@ def top_words_process_one(
         ]
     if top_words not in ["affiliations", "affiliations_others", "person"]:
         print(
-            f'ERROR: Invalid network type options are {
-                [
-                    "affiliations",
-                    "affiliations_others",
-                    "person"]}')
+            'ERROR: Invalid network type options are '
+            f'{["affiliations", "affiliations_others", "person"]}')
         return
 
     if top_words == "affiliations":

@@ -228,8 +228,7 @@ def process_author(entry, colav_reg, db, verbose=0):
                         {'_id': author['id']}, {"_id": 1, "full_name": 1, "first_names": 1, "last_names": 1, "initials": 1, "external_ids": 1})
                     if author_reg is None:
                         print(
-                            f"ERROR: author with id {
-                                author['id']} found not in colav database")
+                            f"ERROR: author with id {author['id']} found not in colav database")
                         continue
 
                 # Note: even in openalex names are bad splitted, so we need to fix them
@@ -470,8 +469,7 @@ def process_one_insert(ciarp_reg, db, collection, affiliation, empty_work,
         if len(entry["source"]["external_ids"]) == 0:
             if verbose > 4:
                 print(
-                    f'Register with doi: {
-                        ciarp_reg["doi"]} does not provide a source')
+                    f'Register with doi: {ciarp_reg["doi"]} does not provide a source')
         else:
             if verbose > 4:
                 print("No source found for\n\t",

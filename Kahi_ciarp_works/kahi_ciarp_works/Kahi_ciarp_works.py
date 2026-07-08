@@ -146,8 +146,7 @@ class Kahi_ciarp_works(KahiBase):
             for col in self.required_columns:
                 if col not in data.columns:
                     print(
-                        f"Column {col} found not in file {
-                            database['file_path']}, and it is required.")
+                        f"Column {col} found not in file {database['file_path']}, and it is required.")
                     return None
             source = str(Path(database["file_path"]).resolve())
             data["source_record_id"] = [

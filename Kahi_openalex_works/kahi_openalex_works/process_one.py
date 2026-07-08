@@ -497,8 +497,7 @@ def process_one_insert(oa_reg, db, collection, empty_work, es_handler,
         if entry["source"]:
             if len(entry["source"]["external_ids"]) == 0:
                 print(
-                    f'Register with doi: {
-                        oa_reg["doi"]} does not provide a source')
+                    f'Register with doi: {oa_reg["doi"]} does not provide a source')
             else:
                 print("No source found for\n\t",
                       entry["source"]["external_ids"])

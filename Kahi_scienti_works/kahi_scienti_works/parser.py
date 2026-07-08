@@ -118,9 +118,7 @@ def parse_scienti(reg, empty_work, doi=None, verbose=0):
         except Exception as e:
             if verbose > 4:
                 print(
-                    f'Error parsing start page on RH: {
-                        reg["COD_RH"]} and COD_PROD: {
-                        reg["COD_PRODUCTO"]}')
+                    f'Error parsing start page on RH: {reg["COD_RH"]} and COD_PROD: {reg["COD_PRODUCTO"]}')
                 print(e)
         try:
             if "TXT_PAGINA_FINAL" in details.keys():
@@ -128,9 +126,7 @@ def parse_scienti(reg, empty_work, doi=None, verbose=0):
         except Exception as e:
             if verbose > 4:
                 print(
-                    f'Error parsing end page on RH: {
-                        reg["COD_RH"]} and COD_PROD: {
-                        reg["COD_PRODUCTO"]}')
+                    f'Error parsing end page on RH: {reg["COD_RH"]} and COD_PROD: {reg["COD_PRODUCTO"]}')
                 print(e)
         try:
             if "TXT_VOLUMEN_REVISTA" in details.keys():
@@ -138,9 +134,7 @@ def parse_scienti(reg, empty_work, doi=None, verbose=0):
         except Exception as e:
             if verbose > 4:
                 print(
-                    f'Error parsing volume on RH: {
-                        reg["COD_RH"]} and COD_PROD: {
-                        reg["COD_PRODUCTO"]}')
+                    f'Error parsing volume on RH: {reg["COD_RH"]} and COD_PROD: {reg["COD_PRODUCTO"]}')
                 print(e)
         try:
             if "TXT_FASCICULO_REVISTA" in details.keys():
@@ -148,9 +142,7 @@ def parse_scienti(reg, empty_work, doi=None, verbose=0):
         except Exception as e:
             if verbose > 4:
                 print(
-                    f'Error parsing issue on RH: {
-                        reg["COD_RH"]} and COD_PROD: {
-                        reg["COD_PRODUCTO"]}')
+                    f'Error parsing issue on RH: {reg["COD_RH"]} and COD_PROD: {reg["COD_PRODUCTO"]}')
                 print(e)
     elif "details" in reg.keys() and len(reg["details"]) > 0 and "oriented_thesis" in reg["details"][0].keys():
         details = None

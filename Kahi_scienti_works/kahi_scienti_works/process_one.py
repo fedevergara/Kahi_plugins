@@ -303,8 +303,7 @@ def process_author(entry, colav_reg, db, verbose=0):
                         {'_id': author['id']}, {"_id": 1, "full_name": 1, "first_names": 1, "last_names": 1, "initials": 1, "external_ids": 1})
                     if author_reg is None:
                         print(
-                            f"ERROR: author with id {
-                                author['id']} found not in colav database")
+                            f"ERROR: author with id {author['id']} found not in colav database")
                         continue
 
                 # Note: even in openalex names are bad splitted, so we need to fix them
@@ -549,9 +548,8 @@ def process_one_update(
                         {"id": group_reg["_id"], "name": group_reg["names"][0]["name"]})
             if not group_reg:
                 print(
-                    f'WARNING: group with ids {
-                        group.get("COD_ID_GRUPO")} and {
-                        group.get("NRO_ID_GRUPO")} found not in affiliation')
+                    f'WARNING: group with ids {group.get("COD_ID_GRUPO")} and '
+                    f'{group.get("NRO_ID_GRUPO")} found not in affiliation')
 
     colav_reg["author_count"] = len(colav_reg["authors"])
 
@@ -632,15 +630,13 @@ def process_one_insert(scienti_reg, db, collection, empty_work, es_handler,
                 if verbose > 4:
                     if "title" in entry["source"].keys():
                         print(
-                            f'Register with COD_RH: {
-                                scienti_reg["COD_RH"]} and COD_PRODUCTO: {
-                                scienti_reg["COD_PRODUCTO"]} could not be linked to a source with name: {
-                                entry["source"]["title"]}')
+                            f'Register with COD_RH: {scienti_reg["COD_RH"]} and '
+                            f'COD_PRODUCTO: {scienti_reg["COD_PRODUCTO"]} could not be '
+                            f'linked to a source with name: {entry["source"]["title"]}')
                     else:
                         print(
-                            f'Register with COD_RH: {
-                                scienti_reg["COD_RH"]} and COD_PRODUCTO: {
-                                scienti_reg["COD_PRODUCTO"]} does not provide a source')
+                            f'Register with COD_RH: {scienti_reg["COD_RH"]} and '
+                            f'COD_PRODUCTO: {scienti_reg["COD_PRODUCTO"]} does not provide a source')
             else:
                 if verbose > 4:
                     print(
@@ -650,22 +646,20 @@ def process_one_insert(scienti_reg, db, collection, empty_work, es_handler,
                 if entry["source"]["title"] == "":
                     if verbose > 4:
                         print(
-                            f'Register with COD_RH: {
-                                scienti_reg["COD_RH"]} and COD_PRODUCTO: {
-                                scienti_reg["COD_PRODUCTO"]} does not provide a source')
+                            f'Register with COD_RH: {scienti_reg["COD_RH"]} and '
+                            f'COD_PRODUCTO: {scienti_reg["COD_PRODUCTO"]} does not provide a source')
                 else:
                     if verbose > 4:
                         print(
-                            f'Register with COD_RH: {
-                                scienti_reg["COD_RH"]} and COD_PRODUCTO: {
-                                scienti_reg["COD_PRODUCTO"]} could not be linked to a source with name: {
-                                entry["source"]["title"]}')
+                            f'Register with COD_RH: {scienti_reg["COD_RH"]} and '
+                            f'COD_PRODUCTO: {scienti_reg["COD_PRODUCTO"]} could not be '
+                            f'linked to a source with name: {entry["source"]["title"]}')
             else:
                 if verbose > 4:
                     print(
-                        f'Register with COD_RH: {
-                            scienti_reg["COD_RH"]} and COD_PRODUCTO: {
-                            scienti_reg["COD_PRODUCTO"]} could not be linked to a source (no ids and no name)')
+                        f'Register with COD_RH: {scienti_reg["COD_RH"]} and '
+                        f'COD_PRODUCTO: {scienti_reg["COD_PRODUCTO"]} could not be '
+                        'linked to a source (no ids and no name)')
 
         entry["source"] = {"id": "", "name": entry["source"][
             "title"] if "title" in entry["source"].keys() else ""}
@@ -857,9 +851,8 @@ def process_one_insert(scienti_reg, db, collection, empty_work, es_handler,
                     {"id": group_reg["_id"], "name": group_reg["names"][0]["name"]})
             if not group_reg:
                 print(
-                    f'WARNING: group with ids {
-                        group.get("COD_ID_GRUPO")} and {
-                        group.get("NRO_ID_GRUPO")} found not in affiliation')
+                    f'WARNING: group with ids {group.get("COD_ID_GRUPO")} and '
+                    f'{group.get("NRO_ID_GRUPO")} found not in affiliation')
 
     # Insert idempotently so a failed Elasticsearch operation can be retried.
     identity = scienti_identity(entry)

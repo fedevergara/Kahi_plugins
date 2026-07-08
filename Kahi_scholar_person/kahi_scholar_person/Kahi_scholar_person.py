@@ -44,17 +44,15 @@ class Kahi_scholar_person(KahiBase):
             config["scholar_person"]["database_url"])
         if config["scholar_person"]["database_name"] not in self.scholar_client.list_database_names():
             raise ValueError(
-                f"Database {
-                    config['scholar_person']['database_name']} found not in {
-                    config['scholar_person']['database_url']}")
+                f"Database {config['scholar_person']['database_name']} found not in "
+                f"{config['scholar_person']['database_url']}")
         self.scholar_db = self.scholar_client[config["scholar_person"]
                                               ["database_name"]]
         if config["scholar_person"]["collection_name"] not in self.scholar_db.list_collection_names():
             raise ValueError(
-                f"Collection {
-                    config['scholar_person']['database_name']}.{
-                    config['scholar_person']['collection_name']} found not in {
-                    config['scholar_person']['database_url']}")
+                f"Collection {config['scholar_person']['database_name']}."
+                f"{config['scholar_person']['collection_name']} found not in "
+                f"{config['scholar_person']['database_url']}")
         self.scholar_collection = self.scholar_db[config["scholar_person"]
                                                   ["collection_name"]]
 
@@ -89,8 +87,7 @@ class Kahi_scholar_person(KahiBase):
 
         if self.verbose:
             print(
-                f"INFO: Processing {
-                    len(authors_by_id)} unique Scholar profiles")
+                f"INFO: Processing {len(authors_by_id)} unique Scholar profiles")
 
         client = MongoClient(self.mongodb_url)
         db = client[self.config["database_name"]]
