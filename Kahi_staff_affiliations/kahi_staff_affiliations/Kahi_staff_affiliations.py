@@ -110,8 +110,7 @@ class Kahi_staff_affiliations(KahiBase):
             for aff in self.required_columns:
                 if aff not in data.columns:
                     print(
-                        f"Column {aff} found not in file {
-                            config['file_path']}, and it is required.")
+                        f"Column {aff} found not in file {config['file_path']}, and it is required.")
                     raise ValueError(f"Column {aff} found not in file")
             return data
 

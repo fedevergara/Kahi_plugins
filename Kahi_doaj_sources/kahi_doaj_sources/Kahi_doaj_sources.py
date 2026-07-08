@@ -22,17 +22,15 @@ class Kahi_doaj_sources(KahiBase):
         self.doaj_client = MongoClient(config["doaj_sources"]["database_url"])
         if config["doaj_sources"]["database_name"] not in self.doaj_client.list_database_names():
             raise Exception(
-                f"""Database {
-                    config["doaj_sources"]["database_name"]} found not in {
-                    config["doaj_sources"]["database_url"]}""")
+                f"""Database {config["doaj_sources"]["database_name"]} found not in """
+                f"""{config["doaj_sources"]["database_url"]}""")
         self.doaj_db = self.doaj_client[config["doaj_sources"]
                                         ["database_name"]]
         if config["doaj_sources"]["collection_name"] not in self.doaj_db.list_collection_names():
             raise Exception(
-                f"""Collection {
-                    config["doaj_sources"]["database_name"]}.{
-                    config["doaj_sources"]["collection_name"]} found not in {
-                    config["doaj_sources"]["database_name"]}""")
+                f"""Collection {config["doaj_sources"]["database_name"]}."""
+                f"""{config["doaj_sources"]["collection_name"]} found not in """
+                f"""{config["doaj_sources"]["database_name"]}""")
         self.doaj_collection = self.doaj_db[config["doaj_sources"]
                                             ["collection_name"]]
 
