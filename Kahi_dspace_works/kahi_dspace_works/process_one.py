@@ -89,7 +89,53 @@ def find_work_by_es_id(collection, value):
         return None
 
 
-def process_one_update(entry, colav_reg, db, collection, verbose):
+def get_units_affiliations(db, author_db, affiliations):
+    """Return the author's faculty and department for a parent institution."""
+    institution_id = None
+    for affiliation in affiliations:
+        affiliation_id = affiliation.get("id")
+        aff_db = None
+        if affiliation_id:
+            aff_db = db["affiliations"].find_one(
+                {"_id": affiliation_id}, {"_id": 1, "types": 1})
+        if aff_db is None:
+            for external_id in affiliation.get("external_ids", []):
+                aff_db = db["affiliations"].find_one(
+                    {"external_ids.id": external_id.get("id")},
+                    {"_id": 1, "types": 1})
+                if aff_db:
+                    break
+        if not aff_db:
+            continue
+        types = [item["type"] for item in aff_db.get("types", [])]
+        if any(unit_type in types for unit_type in (
+                "group", "department", "faculty")):
+            continue
+        if db["person"].count_documents({
+                "_id": author_db["_id"],
+                "affiliations.id": aff_db["_id"],
+        }) > 0:
+            institution_id = aff_db["_id"]
+            break
+
+    units = []
+    if institution_id is None:
+        return units
+    for affiliation in author_db.get("affiliations", []):
+        if affiliation.get("id") == institution_id:
+            continue
+        if db["affiliations"].count_documents({
+                "_id": affiliation.get("id"),
+                "relations.id": institution_id,
+        }) == 0:
+            continue
+        types = [item["type"] for item in affiliation.get("types", [])]
+        if "department" in types or "faculty" in types:
+            units.append(affiliation)
+    return units
+
+
+def process_one_update(entry, colav_reg, affiliation, db, collection, verbose):
     """
     Update the entry in the works collection.
 
@@ -99,6 +145,8 @@ def process_one_update(entry, colav_reg, db, collection, verbose):
         entry from dspace.
     colav_reg : dict
         entry to be updated.
+    affiliation : dict | None
+        trusted repository affiliation, or None if it is not mapped.
     db : pymongo.database.Database
         database object to kahi(ETL) database.
     collection : pymongo.collection.Collection
@@ -158,18 +206,29 @@ def process_one_update(entry, colav_reg, db, collection, verbose):
                         f"WARNING: author with id '' found in colav register: {author}")
                 author_db = db['person'].find_one(
                     # this is required to get  first_names and last_names
-                    {'full_name': author['full_name']}, {"_id": 1, "full_name": 1, "first_names": 1, "last_names": 1, "initials": 1, "updated": 1})
+                    {'full_name': author['full_name']}, {"_id": 1, "full_name": 1, "first_names": 1, "last_names": 1, "initials": 1, "updated": 1, "affiliations": 1})
             else:
                 # only the name can be compared, because we dont have the
                 # affiliation of the author from the paper in author_others
                 author_db = db['person'].find_one(
                     # this is required to get  first_names and last_names
-                    {'_id': author['id']}, {"_id": 1, "full_name": 1, "first_names": 1, "last_names": 1, "initials": 1, "updated": 1})
+                    {'_id': author['id']}, {"_id": 1, "full_name": 1, "first_names": 1, "last_names": 1, "initials": 1, "updated": 1, "affiliations": 1})
             if author_db:
                 name_match = compare_author(
                     author_reg, author_db, len(colav_reg["authors"]))
             if name_match:
                 author["type"] = author_reg["type"]
+                if affiliation is not None:
+                    existing_ids = {
+                        item.get("id") for item in author["affiliations"]}
+                    if affiliation.get("id") not in existing_ids:
+                        author["affiliations"].append(affiliation)
+                        existing_ids.add(affiliation.get("id"))
+                for unit in get_units_affiliations(
+                        db, author_db, author["affiliations"]):
+                    if unit.get("id") not in existing_ids:
+                        author["affiliations"].append(unit)
+                        existing_ids.add(unit.get("id"))
                 break
         if not name_match:
             new_author = {"id": "",
@@ -237,20 +296,29 @@ def process_one_insert(entry, affiliation, db, collection, es_handler, verbose,
                 author_found = db['person'].find_one(
                     {"full_name": author_normalized, "affiliations.id": affiliation["id"], "updated.source": {
                         "$in": priotiry_source}},
-                    {"full_name": 1, "updated": 1},
+                    {"full_name": 1, "updated": 1, "affiliations": 1},
                     collation={"locale": "es", "strength": 1}
                 )
                 if not author_found:
                     author_found = db['person'].find_one(
                         {"full_name": author_normalized,
                             "affiliations.id": affiliation["id"]},
-                        {"full_name": 1, "updated": 1},
+                        {"full_name": 1, "updated": 1, "affiliations": 1},
                         collation={"locale": "es", "strength": 1}
                     )
             if author_found:
                 author["id"] = author_found["_id"]
                 if affiliation is not None:
-                    author["affiliations"].append(affiliation)
+                    existing_ids = {
+                        item.get("id") for item in author["affiliations"]}
+                    if affiliation.get("id") not in existing_ids:
+                        author["affiliations"].append(affiliation)
+                        existing_ids.add(affiliation.get("id"))
+                    for unit in get_units_affiliations(
+                            db, author_found, author["affiliations"]):
+                        if unit.get("id") not in existing_ids:
+                            author["affiliations"].append(unit)
+                            existing_ids.add(unit.get("id"))
         author.pop("first_names", None)
         author.pop("last_names", None)
         author.pop("initials", None)
@@ -391,7 +459,8 @@ def process_one(dspace_reg, affiliation, base_url, db, collection, empty_work,
                         collection, response.get("_id"))
                     if colav_reg:
                         process_one_update(
-                            entry, colav_reg, db, collection, verbose)
+                            entry, colav_reg, affiliation, db, collection,
+                            verbose)
                         return
                     else:
                         if verbose > 4:
@@ -419,7 +488,8 @@ def process_one(dspace_reg, affiliation, base_url, db, collection, empty_work,
             if colav_reg:
                 if title_similarity(entry["titles"], colav_reg["titles"]):
                     process_one_update(
-                        entry, colav_reg, db, collection, verbose)
+                        entry, colav_reg, affiliation, db, collection,
+                        verbose)
                 else:  # if the dois are equal but the titles are not similar
                     process_one_insert(
                         entry,

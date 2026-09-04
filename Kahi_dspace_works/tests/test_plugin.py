@@ -15,7 +15,13 @@ from kahi_dspace_works.Kahi_dspace_works import (
     title_query,
 )
 import kahi_dspace_works.Kahi_dspace_works as plugin_module
-from kahi_dspace_works.process_one import process_one, run_es_operation
+from kahi_dspace_works.process_one import (
+    get_units_affiliations,
+    process_one,
+    process_one_insert,
+    process_one_update,
+    run_es_operation,
+)
 
 
 class FakeCollection:
@@ -248,3 +254,142 @@ def test_repository_cursor_is_streamed_and_closed():
     assert cursor.batch == 500
     assert cursor.iterations == 1
     assert cursor.closed
+
+
+def seed_internal_units(db):
+    parent = {
+        "id": "02yr3f298",
+        "name": "FUCS",
+        "types": [{"source": "ror", "type": "education"}],
+    }
+    faculty = {
+        "id": "02yr3f298_U05",
+        "name": "Facultad de Enfermería",
+        "types": [{"source": "staff", "type": "faculty"}],
+    }
+    department = {
+        "id": "02yr3f298_U05_U01",
+        "name": "Enfermería",
+        "types": [{"source": "staff", "type": "department"}],
+    }
+    group = {
+        "id": "COL0001",
+        "name": "Grupo de Enfermería",
+        "types": [{"source": "scienti", "type": "group"}],
+    }
+    unrelated = {
+        "id": "other_U01",
+        "name": "Otra facultad",
+        "types": [{"source": "staff", "type": "faculty"}],
+    }
+    db.affiliations.insert_many([
+        {"_id": parent["id"], "types": parent["types"]},
+        {"_id": faculty["id"], "relations": [{"id": parent["id"]}]},
+        {"_id": department["id"], "relations": [{"id": parent["id"]}]},
+        {"_id": group["id"], "relations": [{"id": parent["id"]}]},
+        {"_id": unrelated["id"], "relations": [{"id": "other"}]},
+    ])
+    person = {
+        "_id": "person-1",
+        "full_name": "adriana panader torres",
+        "first_names": ["adriana"],
+        "last_names": ["panader", "torres"],
+        "initials": "apt",
+        "updated": [{"source": "staff"}],
+        "affiliations": [parent, faculty, department, group, unrelated],
+    }
+    db.person.insert_one(deepcopy(person))
+    return parent, faculty, department, group, unrelated, person
+
+
+def test_get_units_affiliations_returns_faculty_and_department_only():
+    db = mongomock.MongoClient().db
+    parent, faculty, department, _group, _unrelated, person = seed_internal_units(db)
+
+    units = get_units_affiliations(db, person, [parent])
+
+    assert [unit["id"] for unit in units] == [faculty["id"], department["id"]]
+
+
+def test_get_units_affiliations_requires_parent_in_product():
+    db = mongomock.MongoClient().db
+    _parent, _faculty, _department, _group, _unrelated, person = seed_internal_units(db)
+
+    assert get_units_affiliations(db, person, []) == []
+
+
+def test_get_units_affiliations_requires_parent_in_person():
+    db = mongomock.MongoClient().db
+    parent, _faculty, _department, _group, _unrelated, person = seed_internal_units(db)
+    person["affiliations"] = person["affiliations"][1:]
+    db.person.replace_one({"_id": person["_id"]}, person)
+
+    assert get_units_affiliations(db, person, [parent]) == []
+
+
+def test_get_units_affiliations_resolves_parent_external_id():
+    db = mongomock.MongoClient().db
+    parent, faculty, department, _group, _unrelated, person = seed_internal_units(db)
+    db.affiliations.update_one(
+        {"_id": parent["id"]},
+        {"$set": {"external_ids": [{"id": "https://ror.org/02yr3f298"}]}})
+
+    units = get_units_affiliations(db, person, [{
+        "external_ids": [{"id": "https://ror.org/02yr3f298"}]
+    }])
+
+    assert [unit["id"] for unit in units] == [faculty["id"], department["id"]]
+
+
+def test_dspace_insert_propagates_units_without_duplicates():
+    db = mongomock.MongoClient().db
+    parent, faculty, department, _group, _unrelated, _person = seed_internal_units(db)
+    entry = empty_work()
+    entry.update({
+        "titles": [{"title": "Trabajo de enfermería", "lang": "es"}],
+        "external_ids": [{"source": "dspace", "id": "oai:test:1"}],
+        "authors": [{
+            "id": "",
+            "full_name": "Adriana Panader Torres",
+            "first_names": ["Adriana"],
+            "last_names": ["Panader", "Torres"],
+            "initials": "APT",
+            "affiliations": [deepcopy(parent)],
+        }],
+    })
+
+    process_one_insert(entry, parent, db, db.works, None, 0)
+
+    author = db.works.find_one()["authors"][0]
+    assert author["id"] == "person-1"
+    assert [item["id"] for item in author["affiliations"]] == [
+        parent["id"], faculty["id"], department["id"]]
+
+
+def test_dspace_update_propagates_units_to_matched_author():
+    db = mongomock.MongoClient().db
+    parent, faculty, department, _group, _unrelated, _person = seed_internal_units(db)
+    existing = empty_work()
+    existing.update({
+        "_id": "work-1",
+        "authors": [{
+            "id": "person-1",
+            "full_name": "adriana panader torres",
+            "affiliations": [deepcopy(parent)],
+        }],
+        "author_count": 1,
+    })
+    db.works.insert_one(deepcopy(existing))
+    incoming = empty_work()
+    incoming["authors"] = [{
+        "full_name": "Adriana Panader Torres",
+        "type": "author",
+        "affiliations": [],
+    }]
+
+    with patch("kahi_dspace_works.process_one.compare_author", return_value=True):
+        process_one_update(incoming, existing, parent, db, db.works, 0)
+
+    author = db.works.find_one({"_id": "work-1"})["authors"][0]
+    assert [item["id"] for item in author["affiliations"]] == [
+        parent["id"], faculty["id"], department["id"]]
