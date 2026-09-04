@@ -1,4 +1,5 @@
 from kahi.KahiBase import KahiBase
+from copy import deepcopy
 from pymongo import MongoClient, ASCENDING, TEXT
 from time import time
 from thefuzz import fuzz
@@ -8,6 +9,17 @@ from kahi_impactu_utils.Utils import check_date_format
 def normalize_scienti_rank(value):
     """Translate the Scienti code for recognized groups."""
     return "Reconocido" if value == "00" else value
+
+
+def inherit_parent_addresses(entry, parents):
+    """Copy unique parent addresses when the affiliation has none."""
+    if entry.get("addresses"):
+        return False
+    for parent in parents:
+        for address in parent.get("addresses", []):
+            if address not in entry["addresses"]:
+                entry["addresses"].append(deepcopy(address))
+    return bool(entry["addresses"])
 
 
 class Kahi_scienti_affiliations(KahiBase):
@@ -199,6 +211,21 @@ class Kahi_scienti_affiliations(KahiBase):
         for group_id in scienti.distinct("group.COD_ID_GRUPO", {"group.COD_ID_GRUPO": {"$ne": None}}):
             db_reg = self.collection.find_one({"external_ids.id": group_id})
             if db_reg:
+                if not db_reg.get("addresses"):
+                    parents = [
+                        self.collection.find_one(
+                            {"_id": relation.get("id")},
+                            {"addresses": 1},
+                        )
+                        for relation in db_reg.get("relations", [])
+                        if relation.get("id")
+                    ]
+                    if inherit_parent_addresses(
+                            db_reg, [parent for parent in parents if parent]):
+                        self.collection.update_one(
+                            {"_id": db_reg["_id"]},
+                            {"$set": {"addresses": db_reg["addresses"]}},
+                        )
                 continue
             entry = self.empty_affiliation()
             entry["updated"].append({"time": int(time()), "source": "scienti"})
@@ -250,6 +277,7 @@ class Kahi_scienti_affiliations(KahiBase):
                         "subjects": subjects
                     })
 
+                parent_institutions = []
                 for reg in scienti.find({"group.COD_ID_GRUPO": group_id}):
                     for inst in reg["group"][0]["institution"]:
                         if not inst["TXT_NIT"] or not inst["TXT_DIGITO_VERIFICADOR"]:
@@ -257,6 +285,7 @@ class Kahi_scienti_affiliations(KahiBase):
                         db_inst = self.collection.find_one(
                             {"external_ids.id": inst["TXT_NIT"] + "-" + inst["TXT_DIGITO_VERIFICADOR"]})
                         if db_inst:
+                            parent_institutions.append(db_inst)
                             name = db_inst["names"][0]["name"]
                             for n in db_inst["names"]:
                                 if n["lang"] == "es":
@@ -268,6 +297,7 @@ class Kahi_scienti_affiliations(KahiBase):
                                 "name": name, "id": db_inst["_id"], "types": db_inst["types"]}
                             if rel_entry not in entry["relations"]:
                                 entry["relations"].append(rel_entry)
+                inherit_parent_addresses(entry, parent_institutions)
                 entry["_id"] = group_id
                 self.collection.insert_one(entry)
 
