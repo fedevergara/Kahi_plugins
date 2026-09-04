@@ -4,6 +4,20 @@ from time import time
 from joblib import Parallel, delayed
 
 
+def openalex_address(oa_aff):
+    """Build the canonical affiliation address from OpenAlex geo data."""
+    geo = oa_aff["geo"]
+    return {
+        "lat": geo["latitude"],
+        "lng": geo["longitude"],
+        "state": geo["region"],
+        "city": geo["city"],
+        "city_id": geo["geonames_city_id"],
+        "country": geo["country"],
+        "country_code": geo["country_code"],
+    }
+
+
 def process_one(oa_aff, collection, empty_affiliations, max_tries=10):
 
     db_reg = None
@@ -30,17 +44,7 @@ def process_one(oa_aff, collection, empty_affiliations, max_tries=10):
 
         # addresses
         if len(db_reg["addresses"]) == 0:
-            db_reg["addresses"] = [
-                {
-                    "lat": oa_aff["geo"]["latitude"],
-                    "lng": oa_aff["geo"]["longitude"],
-                    "state": oa_aff["geo"]["region"],
-                    "city": oa_aff["geo"]["city"],
-                    "city_id": oa_aff["geo"]["geo_names_city_id"],
-                    "country": oa_aff["geo"]["country"],
-                    "country_code": oa_aff["geo"]["country_code"]
-                }
-            ]
+            db_reg["addresses"] = [openalex_address(oa_aff)]
 
         # names
         international = oa_aff.get("international")
@@ -108,17 +112,7 @@ def process_one(oa_aff, collection, empty_affiliations, max_tries=10):
         for abv in oa_aff["display_name_alternatives"]:
             entry["abbreviations"].append(abv)
         # addresses
-        entry["addresses"] = [
-            {
-                "lat": oa_aff["geo"]["latitude"],
-                "lng": oa_aff["geo"]["longitude"],
-                "state": oa_aff["geo"]["region"],
-                "city": oa_aff["geo"]["city"],
-                "city_id": oa_aff["geo"]["geonames_city_id"],
-                "country": oa_aff["geo"]["country"],
-                "country_code": oa_aff["geo"]["country_code"]
-            }
-        ]
+        entry["addresses"] = [openalex_address(oa_aff)]
         if oa_aff["ror"]:
             entry["_id"] = oa_aff["ror"].split("/")[-1]
         else:
