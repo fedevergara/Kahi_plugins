@@ -5,6 +5,11 @@ from thefuzz import fuzz
 from kahi_impactu_utils.Utils import check_date_format
 
 
+def normalize_scienti_rank(value):
+    """Translate the Scienti code for recognized groups."""
+    return "Reconocido" if value == "00" else value
+
+
 class Kahi_scienti_affiliations(KahiBase):
 
     config = {}
@@ -233,7 +238,7 @@ class Kahi_scienti_affiliations(KahiBase):
                 if "TXT_CLASIF" in group.keys() and "DTA_CLASIF" in group.keys():
                     entry["ranking"].append({
                         "source": "scienti",
-                        "rank": group["TXT_CLASIF"],
+                        "rank": normalize_scienti_rank(group["TXT_CLASIF"]),
                         "from_date": check_date_format(group["DTA_CLASIF"]),
                         "to_date": check_date_format(group["DTA_FIN_CLASIF"])
                     })
