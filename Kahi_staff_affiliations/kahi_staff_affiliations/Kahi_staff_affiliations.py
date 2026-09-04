@@ -1,4 +1,5 @@
 from kahi.KahiBase import KahiBase
+from copy import deepcopy
 from pymongo import MongoClient, TEXT
 from pandas import DataFrame, read_excel
 from time import time
@@ -8,6 +9,14 @@ from kahi_impactu_utils.String import title_case
 def has_text(value):
     return value is not None and str(value).strip().lower() not in {
         "", "nan", "nat", "none"}
+
+
+def inherit_parent_addresses(entry, parent):
+    """Copy parent institution addresses when an academic unit has none."""
+    if entry.get("addresses") or not parent.get("addresses"):
+        return False
+    entry["addresses"] = deepcopy(parent["addresses"])
+    return True
 
 
 class Kahi_staff_affiliations(KahiBase):
@@ -152,6 +161,11 @@ class Kahi_staff_affiliations(KahiBase):
             if name not in self.facs_inserted.keys():
                 is_in_db = self.collection.find_one({"_id": _id})
                 if is_in_db:
+                    if inherit_parent_addresses(is_in_db, staff_reg):
+                        self.collection.update_one(
+                            {"_id": is_in_db["_id"]},
+                            {"$set": {"addresses": is_in_db["addresses"]}},
+                        )
                     if name not in self.facs_inserted.keys():
                         self.facs_inserted[name] = is_in_db["_id"]
                         print(name, f" already in db {_id}")
@@ -168,6 +182,7 @@ class Kahi_staff_affiliations(KahiBase):
                         {"source": "staff", "type": "faculty"})
                     entry["relations"].append(
                         {"id": staff_reg["_id"], "name": institution_name, "types": staff_reg["types"]})
+                    inherit_parent_addresses(entry, staff_reg)
                     if reg["código_unidad_académica"]:
                         entry["external_ids"].append(
                             {"source": "staff", "id": str(reg["código_unidad_académica"])})
@@ -187,6 +202,11 @@ class Kahi_staff_affiliations(KahiBase):
                 if name_dep_id not in self.deps_inserted.keys():
                     is_in_db = self.collection.find_one({"_id": _id})
                     if is_in_db:
+                        if inherit_parent_addresses(is_in_db, staff_reg):
+                            self.collection.update_one(
+                                {"_id": is_in_db["_id"]},
+                                {"$set": {"addresses": is_in_db["addresses"]}},
+                            )
                         if name_dep_id not in self.deps_inserted.keys():
                             self.deps_inserted[name_dep_id] = is_in_db["_id"]
                             print(name_dep, f" already in db {_id}")
@@ -203,6 +223,7 @@ class Kahi_staff_affiliations(KahiBase):
                             {"source": "staff", "type": "department"})
                         entry["relations"].append(
                             {"id": staff_reg["_id"], "name": institution_name, "types": staff_reg["types"]})
+                        inherit_parent_addresses(entry, staff_reg)
                         if reg["código_subunidad_académica"]:
                             entry["external_ids"].append(
                                 {"source": "staff", "id": str(reg["código_subunidad_académica"])})
