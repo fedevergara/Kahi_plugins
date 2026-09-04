@@ -1,7 +1,7 @@
 from kahi_siiu_projects.parser import parse_siiu
 
 
-def get_units_affiations(db, author_db, affiliations):
+def get_units_affiliations(db, author_db, affiliations):
     """
     Method to get the units of an author in a register. ex: faculty, department and group.
 
@@ -110,7 +110,7 @@ def process_one_insert(siiu_reg, db, collection, empty_project, es_handler, verb
                                 )
                                 break
                 author["affiliations"] = affiliations
-                aff_units = get_units_affiations(
+                aff_units = get_units_affiliations(
                     db, author_db, author["affiliations"])
                 for aff_unit in aff_units:
                     if aff_unit not in author["affiliations"]:

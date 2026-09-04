@@ -108,7 +108,7 @@ def extract_affiliation_years(affiliations):
     return []
 
 
-def get_units_affiations(db, author_db, affiliations):
+def get_units_affiliations(db, author_db, affiliations):
     """
     Method to get the units of an author in a register. ex: faculty, department and group.
 
@@ -284,7 +284,7 @@ def process_author(entry, colav_reg, db, verbose=0):
                     for group in groups:
                         if group not in author["affiliations"]:
                             author["affiliations"].append(group)
-                    aff_units = get_units_affiations(
+                    aff_units = get_units_affiliations(
                         db, author_db, author["affiliations"])
                     for aff_unit in aff_units:
                         if aff_unit not in author["affiliations"]:

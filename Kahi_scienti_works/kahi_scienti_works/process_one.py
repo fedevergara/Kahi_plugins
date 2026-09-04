@@ -194,7 +194,7 @@ def get_doi(reg):
     return False
 
 
-def get_units_affiations(db, author_db, affiliations):
+def get_units_affiliations(db, author_db, affiliations):
     """
     Method to get the units of an author in a register. ex: faculty, department and group.
 
@@ -350,7 +350,7 @@ def process_author(entry, colav_reg, db, verbose=0):
                         if group not in author["affiliations"]:
                             author["affiliations"].append(group)
 
-                    aff_units = get_units_affiations(
+                    aff_units = get_units_affiliations(
                         db, author_db, author["affiliations"])
                     for aff_unit in aff_units:
                         if aff_unit not in author["affiliations"]:
@@ -686,7 +686,7 @@ def process_one_insert(scienti_reg, db, collection, empty_work, es_handler,
             "full_name": author_db["full_name"],
             "affiliations": author["affiliations"]
         }
-        aff_units = get_units_affiations(db, author_db, author["affiliations"])
+        aff_units = get_units_affiliations(db, author_db, author["affiliations"])
         for aff_unit in aff_units:
             if aff_unit not in author["affiliations"]:
                 author["affiliations"].append(aff_unit)
@@ -708,7 +708,7 @@ def process_one_insert(scienti_reg, db, collection, empty_work, es_handler,
                 "full_name": author_db["full_name"],
                 "affiliations": author["affiliations"]
             }
-            aff_units = get_units_affiations(
+            aff_units = get_units_affiliations(
                 db, author_db, author["affiliations"])
             for aff_unit in aff_units:
                 if aff_unit not in author["affiliations"]:

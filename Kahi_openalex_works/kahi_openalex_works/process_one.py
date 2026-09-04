@@ -219,7 +219,7 @@ def match_existing_work_author(db, incoming_author, existing_authors,
     return best[0] if best_score > 0 and len(best) == 1 else None
 
 
-def get_units_affiations(db, author_db, affiliations):
+def get_units_affiliations(db, author_db, affiliations):
     """
     Method to get the units of an author in a register. ex: faculty, department and group.
 
@@ -373,7 +373,7 @@ def process_one_update(
         if author_db is None:
             continue
 
-        aff_units = get_units_affiations(
+        aff_units = get_units_affiliations(
             db, author_db, author["affiliations"])
         existing_affiliation_ids = {
             affiliation.get("id")
@@ -575,7 +575,7 @@ def process_one_insert(oa_reg, db, collection, empty_work, es_handler,
                 "full_name": author_db["full_name"],
                 "affiliations": author["affiliations"]
             }
-            aff_units = get_units_affiations(
+            aff_units = get_units_affiliations(
                 db, author_db, author["affiliations"])
             for aff_unit in aff_units:
                 if aff_unit not in author["affiliations"]:
@@ -611,7 +611,7 @@ def process_one_insert(oa_reg, db, collection, empty_work, es_handler,
                     "full_name": author_db["full_name"],
                     "affiliations": author["affiliations"]
                 }
-                aff_units = get_units_affiations(
+                aff_units = get_units_affiliations(
                     db, author_db, author["affiliations"])
                 for aff_unit in aff_units:
                     if aff_unit not in author["affiliations"]:

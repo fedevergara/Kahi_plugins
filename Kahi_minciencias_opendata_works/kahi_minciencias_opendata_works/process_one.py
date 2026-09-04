@@ -84,7 +84,7 @@ def find_work_by_es_id(collection, value):
         return None
 
 
-def get_units_affiations(db, author_db, affiliations):
+def get_units_affiliations(db, author_db, affiliations):
     """
     Method to get the units of an author in a register. ex: faculty, department and group.
 
@@ -337,7 +337,7 @@ def process_one_update(
                             if "education" in types:
                                 if relation["id"] not in affs:
                                     author["affiliations"].append(relation)
-                    aff_units = get_units_affiations(
+                    aff_units = get_units_affiliations(
                         db, author_db, author["affiliations"])
                     for aff_unit in aff_units:
                         if aff_unit not in author["affiliations"]:
@@ -473,7 +473,7 @@ def process_one_insert(openadata_reg, db, collection, empty_work, es_handler,
                             if "education" in types:
                                 if relation["id"] not in affs:
                                     author["affiliations"].append(relation)
-                    aff_units = get_units_affiations(
+                    aff_units = get_units_affiliations(
                         db, author_db, author["affiliations"])
                     for aff_unit in aff_units:
                         if aff_unit not in author["affiliations"]:
