@@ -12,6 +12,25 @@ from time import time
 import re
 
 
+def is_strict_institution_match(match):
+    """Accept exact names or high-confidence similarities only."""
+    if not match:
+        return False
+    scores = match["scores"]
+    return any([
+        match["normalized_name"] == match["normalized_source_name"],
+        scores["ratio"] >= 94,
+        scores["token_sort_ratio"] >= 96,
+        scores["token_set_ratio"] >= 95
+        and match["distinctive_token_overlap"] >= 0.80
+        and match["distinctive_name_token_count"] >= 3,
+        scores["token_set_ratio"] >= 99
+        and match["distinctive_token_overlap"] >= 0.80,
+        scores["wratio"] >= 96
+        and match["distinctive_token_overlap"] >= 0.80,
+    ])
+
+
 class Kahi_minciencias_opendata_affiliations(KahiBase):
 
     config = {}
@@ -133,7 +152,9 @@ class Kahi_minciencias_opendata_affiliations(KahiBase):
             return name
 
     def normalize_institution_name(self, name):
-        name = unidecode(name.lower())
+        if name is None:
+            return ""
+        name = unidecode(str(name).lower())
         name = name.replace("(colombia)", "").replace("bogotá", "")
         name = re.sub(r"[^\w\s]", " ", name)
         name = re.sub(r"\s+", " ", name).strip()
@@ -193,7 +214,7 @@ class Kahi_minciencias_opendata_affiliations(KahiBase):
         if not inst_aval:
             return None
 
-        institution = self.find_matching_institution(inst_aval)
+        institution = self.find_matching_institution(inst_aval, reg=reg)
         if institution:
             return institution
 
@@ -226,6 +247,12 @@ class Kahi_minciencias_opendata_affiliations(KahiBase):
             institution = self.get_or_create_aval_institution(
                 inst_aval, collection, reg)
             if institution:
+                synthetic_id = self.aval_institution_id(inst_aval.strip())
+                if institution["_id"] != synthetic_id:
+                    entry["relations"] = [
+                        relation for relation in entry["relations"]
+                        if relation.get("id") != synthetic_id
+                    ]
                 relation = {
                     "types": institution.get("types", []),
                     "id": institution["_id"],
@@ -249,18 +276,31 @@ class Kahi_minciencias_opendata_affiliations(KahiBase):
             name = item.get("name")
             if name and name not in names:
                 names.append(name)
+        for field in ["aliases", "abbreviations"]:
+            for item in institution.get(field, []):
+                name = item.get("name") if isinstance(item, dict) else item
+                if name and name not in names:
+                    names.append(name)
         return names
 
     def get_institution_candidates(self, inst_aval):
         projection = {
             "names": 1,
+            "aliases": 1,
+            "abbreviations": 1,
             "types": 1,
             "addresses": 1,
+            "external_ids": 1,
+            "relations": 1,
             "score": {"$meta": "textScore"}
         }
         base_query = {
-            "addresses.country": "Colombia",
-            "types.type": {"$ne": "group"}
+            "types.type": {"$ne": "group"},
+            "$or": [
+                {"addresses.country": "Colombia"},
+                {"addresses.country_code": "CO"},
+                {"addresses.0": {"$exists": False}},
+            ],
         }
         candidates = []
         seen = set()
@@ -300,6 +340,7 @@ class Kahi_minciencias_opendata_affiliations(KahiBase):
             current = {
                 "name": name,
                 "normalized_name": name_mod,
+                "normalized_source_name": compare_inst_aval,
                 "score": score,
                 "scores": scores,
                 "token_overlap": token_overlap,
@@ -310,40 +351,76 @@ class Kahi_minciencias_opendata_affiliations(KahiBase):
                 best = current
         return best
 
-    def find_matching_institution(self, inst_aval):
+    def institution_address_score(self, institution, reg):
+        if not reg:
+            return 0
+        source_state = self.normalize_institution_name(
+            reg.get("nme_departamento_gr", ""))
+        source_city = self.normalize_institution_name(
+            reg.get("nme_municipio_gr", ""))
+        score = 0
+        for address in institution.get("addresses", []):
+            state = self.normalize_institution_name(address.get("state", ""))
+            city = self.normalize_institution_name(address.get("city", ""))
+            current = int(bool(source_state and state == source_state)) * 2
+            current += int(bool(source_city and city == source_city)) * 3
+            score = max(score, current)
+        return score
+
+    def institution_candidate_rank(self, candidate, match, reg):
+        has_catalog_id = any(
+            ext.get("source") == "minciencias"
+            and re.fullmatch(r"\d{12}", str(ext.get("id", "")))
+            for ext in candidate.get("external_ids", []))
+        is_synthetic = str(candidate.get("_id", "")).startswith("IUA")
+        is_root = not candidate.get("relations")
+        return (
+            match["normalized_name"] == match["normalized_source_name"],
+            has_catalog_id,
+            not is_synthetic,
+            self.institution_address_score(candidate, reg),
+            is_root,
+            match["score"],
+            match["distinctive_token_overlap"],
+        )
+
+    def find_matching_institution(self, inst_aval, reg=None):
         inst_aval = self.normalize_inst_aval(inst_aval)
-        if inst_aval in self.institution_match_cache:
-            return self.institution_match_cache[inst_aval]
+        cache_key = (
+            inst_aval,
+            self.normalize_institution_name(reg.get("nme_departamento_gr", "")) if reg else "",
+            self.normalize_institution_name(reg.get("nme_municipio_gr", "")) if reg else "",
+        )
+        if cache_key in self.institution_match_cache:
+            return self.institution_match_cache[cache_key]
         candidates = self.get_institution_candidates(inst_aval)
         matches = []
         for candidate in candidates:
             match = self.institution_match_score(candidate, inst_aval)
-            if not match:
-                continue
-            scores = match["scores"]
-            exact_match = match["normalized_name"] == inst_aval
-            high_direct_score = scores["ratio"] >= 92 or scores["token_sort_ratio"] >= 95
-            token_subset_match = all([
-                scores["token_set_ratio"] >= 92,
-                match["distinctive_token_overlap"] >= 0.75,
-                match["distinctive_name_token_count"] >= 3,
-            ])
-            strong_token_set_match = all([
-                scores["token_set_ratio"] >= 98,
-                match["distinctive_token_overlap"] >= 0.75,
-            ])
-            strong_weighted_match = all([
-                scores["wratio"] >= 94,
-                match["distinctive_token_overlap"] >= 0.75,
-            ])
-            if exact_match or high_direct_score or token_subset_match or strong_token_set_match or strong_weighted_match:
-                matches.append((candidate, match))
+            if is_strict_institution_match(match):
+                matches.append((
+                    candidate,
+                    match,
+                    self.institution_candidate_rank(candidate, match, reg),
+                ))
         if not matches:
-            self.institution_match_cache[inst_aval] = None
+            self.institution_match_cache[cache_key] = None
             return None
-        matches.sort(key=lambda item: item[1]["score"], reverse=True)
-        self.institution_match_cache[inst_aval] = matches[0][0]
-        return self.institution_match_cache[inst_aval]
+        matches.sort(key=lambda item: item[2], reverse=True)
+        if len(matches) > 1:
+            top_rank = matches[0][2]
+            second_rank = matches[1][2]
+            tied = top_rank == second_rank
+            close_fuzzy = (
+                not top_rank[0]
+                and top_rank[:5] == second_rank[:5]
+                and top_rank[5] - second_rank[5] < 3
+            )
+            if tied or close_fuzzy:
+                self.institution_match_cache[cache_key] = None
+                return None
+        self.institution_match_cache[cache_key] = matches[0][0]
+        return self.institution_match_cache[cache_key]
 
     def group_name(self, reg):
         if "nme_grupo_gr" in reg.keys():
