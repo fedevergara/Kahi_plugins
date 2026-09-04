@@ -34,6 +34,7 @@ workflow:
       - database_url: localhost:27017
         database_name: scienti_111
         collection_name: products
+        institution_collection_name: institution # optional; defaults to institution
 ```
 
 If you have several scienti databases use the example below
@@ -55,11 +56,15 @@ workflow:
     verbose: 2
 ```
 
+The plugin consolidates the root `institution` collections before processing
+groups. It enriches existing affiliations or inserts missing institutions using
+the current affiliation schema, and links hierarchical units through
+`COD_INST_MACRO`.
+
 # License
 BSD-3-Clause License 
 
 # Links
 http://colav.udea.edu.co/
-
 
 
