@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 def object_id_key(value: Any) -> str:
@@ -12,6 +12,7 @@ class CandidateGroup:
     key: Any
     member_ids: Tuple[Any, ...]
     order: int
+    work_author_count: Optional[int] = None
 
 
 @dataclass(frozen=True)

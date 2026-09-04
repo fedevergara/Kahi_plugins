@@ -155,8 +155,8 @@ def test_cluster_rejects_a_strong_bridge_with_cross_member_name_conflict():
 
 def test_cluster_rejects_transitive_authoritative_identifier_conflict():
     groups = [
-        CandidateGroup("doi", DOI_1, ("a", "b"), 0),
-        CandidateGroup("doi", DOI_2, ("b", "c"), 1),
+        CandidateGroup("doi", DOI_1, ("a", "b"), 0, 4),
+        CandidateGroup("doi", DOI_2, ("b", "c"), 1, 4),
     ]
     snapshot = {
         "a": person(
@@ -183,7 +183,7 @@ def test_cluster_rejects_transitive_authoritative_identifier_conflict():
 
 
 def test_one_doi_with_compatible_non_exact_name_is_review_only():
-    groups = [CandidateGroup("doi", DOI_1, ("a", "b"), 0)]
+    groups = [CandidateGroup("doi", DOI_1, ("a", "b"), 0, 2000)]
     snapshot = {
         "a": person(
             "a",
@@ -209,6 +209,85 @@ def test_one_doi_with_compatible_non_exact_name_is_review_only():
     assert results[0].plans == ()
     assert len(results[0].review_plans) == 1
     assert results[0].review_plans[0].confidence == "medium"
+
+
+def test_one_small_work_doi_with_initial_and_full_name_is_high_confidence():
+    groups = [CandidateGroup("doi", DOI_1, ("a", "b"), 0, 4)]
+    snapshot = {
+        "a": person(
+            "a",
+            "A Lovelace",
+            "staff",
+            first_names=["A"],
+            last_names=["Lovelace"],
+            initials="A",
+        ),
+        "b": person(
+            "b",
+            "Ada Lovelace",
+            "scholar",
+            first_names=["Ada"],
+            last_names=["Lovelace"],
+            initials="A",
+        ),
+    }
+
+    discovery, results = build(groups, snapshot)
+
+    assert discovery.edges[0].confidence == "high"
+    assert discovery.edges[0].score == 75
+    assert discovery.edges[0].match_details[0]["work_author_count"] == 4
+    assert discovery.edges[0].match_details[0]["confidence_reasons"] == [
+        "small_work_compatible_name",
+        "shared_doi",
+    ]
+    assert len(results[0].plans) == 1
+
+
+@pytest.mark.parametrize(
+    ("author_count", "expected_confidence"),
+    [(10, "high"), (11, "medium"), (None, "medium")],
+)
+def test_compatible_name_uses_actual_work_author_threshold(
+    author_count, expected_confidence
+):
+    snapshot = {
+        "a": person(
+            "a", "A Lovelace", "staff", first_names=["A"],
+            last_names=["Lovelace"], initials="A"
+        ),
+        "b": person(
+            "b", "Ada Lovelace", "scholar", first_names=["Ada"],
+            last_names=["Lovelace"], initials="A"
+        ),
+    }
+
+    discovery, _ = build(
+        [CandidateGroup("doi", DOI_1, ("a", "b"), 0, author_count)],
+        snapshot,
+    )
+
+    assert discovery.edges[0].confidence == expected_confidence
+
+
+@pytest.mark.parametrize(
+    ("author_count", "expected_confidence"),
+    [(50, "high"), (51, "medium"), (None, "medium")],
+)
+def test_exact_name_uses_exact_name_author_threshold(
+    author_count, expected_confidence
+):
+    snapshot = {
+        "a": person("a", "Ada Lovelace", "staff"),
+        "b": person("b", "Ada Lovelace", "openalex"),
+    }
+
+    discovery, _ = build(
+        [CandidateGroup("doi", DOI_1, ("a", "b"), 0, author_count)],
+        snapshot,
+    )
+
+    assert discovery.edges[0].confidence == expected_confidence
 
 
 def test_two_dois_with_compatible_name_are_high_confidence():
@@ -238,13 +317,13 @@ def test_two_dois_with_compatible_name_are_high_confidence():
     assert discovery.edges[0].score == 90
     assert results[0].plans[0].confidence == "high"
     assert results[0].plans[0].evidence == (
-        {"source": "doi", "key": "10.1000/first"},
-        {"source": "doi", "key": "10.1000/second"},
+        {"source": "doi", "key": DOI_1},
+        {"source": "doi", "key": DOI_2},
     )
 
 
 def test_exact_name_and_one_doi_are_high_confidence():
-    groups = [CandidateGroup("doi", DOI_1, ("a", "b"), 0)]
+    groups = [CandidateGroup("doi", DOI_1, ("a", "b"), 0, 20)]
     snapshot = {
         "a": person("a", "Ada Lovelace", "staff"),
         "b": person("b", "Ada Lovelace", "openalex"),
@@ -288,7 +367,7 @@ def test_alias_only_match_is_kept_for_review():
 
 
 def test_alias_only_match_with_three_shared_name_tokens_is_high_confidence():
-    groups = [CandidateGroup("doi", DOI_1, ("a", "b"), 0)]
+    groups = [CandidateGroup("doi", DOI_1, ("a", "b"), 0, 4)]
     snapshot = {
         "a": person(
             "a",
@@ -419,7 +498,7 @@ def test_partial_alias_cannot_override_divergent_complete_names():
 
 def test_shared_affiliation_support_does_not_promote_a_weak_edge_to_high():
     affiliation = [{"id": "https://ror.org/12345"}]
-    groups = [CandidateGroup("doi", DOI_1, ("a", "b"), 0)]
+    groups = [CandidateGroup("doi", DOI_1, ("a", "b"), 0, 2000)]
     snapshot = {
         "a": person(
             "a",
@@ -452,8 +531,8 @@ def test_shared_affiliation_support_does_not_promote_a_weak_edge_to_high():
 
 def test_high_subcluster_is_preserved_when_another_edge_is_medium():
     groups = [
-        CandidateGroup("doi", DOI_1, ("a", "b"), 0),
-        CandidateGroup("doi", DOI_2, ("b", "c"), 1),
+        CandidateGroup("doi", DOI_1, ("a", "b"), 0, 20),
+        CandidateGroup("doi", DOI_2, ("b", "c"), 1, 2000),
     ]
     snapshot = {
         "a": person("a", "Ada Lovelace", "staff"),
@@ -571,6 +650,45 @@ def test_pair_conflicting_orcids_are_rejected_before_graph_construction():
     assert results == ()
 
 
+def test_pair_with_different_cedulas_is_rejected_without_rewriting_source():
+    source = "Cédula de Ciudadanía"
+    left_external_ids = [{"source": source, "id": "1.234.567"}]
+    right_external_ids = [{"source": source, "id": "7654321"}]
+    snapshot = {
+        "a": person(
+            "a", "Ada Lovelace", "staff", external_ids=left_external_ids
+        ),
+        "b": person(
+            "b", "Ada Lovelace", "scholar", external_ids=right_external_ids
+        ),
+    }
+
+    discovery, results = build(
+        [CandidateGroup("doi", DOI_1, ("a", "b"), 0, 2)],
+        snapshot,
+    )
+
+    assert discovery.edges == ()
+    assert discovery.rejected_national_id_conflicts == 1
+    assert discovery.rejected_identity_conflicts == 1
+    assert snapshot["a"]["external_ids"][0]["source"] == source
+    assert snapshot["b"]["external_ids"][0]["source"] == source
+    assert results == ()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "10.1000/FIRST",
+        "doi:10.1000/FIRST",
+        "http://dx.doi.org/10.1000/FIRST.",
+        "https%3A%2F%2Fdoi.org%2F10.1000%2FFIRST",
+    ],
+)
+def test_doi_candidate_key_is_canonicalized(value):
+    assert ComponentResolver._canonical_candidate_key("doi", value) == DOI_1
+
+
 def test_document_with_multiple_valid_orcids_is_rejected_before_graph():
     snapshot = {
         "a": person(
@@ -667,6 +785,7 @@ def test_final_validation_rejects_a_plan_with_conflicting_orcids():
         plans=(plan,),
         review_plans=(),
         rejected_orcid_conflicts=0,
+        rejected_national_id_conflicts=0,
         rejected_identity_conflicts=0,
         rejected_name_mismatches=0,
         rejected_given_name_conflicts=0,
@@ -696,6 +815,7 @@ def test_review_plan_never_enters_apply_transaction():
         plans=(),
         review_plans=(),
         rejected_orcid_conflicts=0,
+        rejected_national_id_conflicts=0,
         rejected_identity_conflicts=0,
         rejected_name_mismatches=0,
         rejected_given_name_conflicts=0,

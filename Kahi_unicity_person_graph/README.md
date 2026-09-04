@@ -64,7 +64,9 @@ config:
 workflow:
   unicity_person_graph:
     collection_name: person
-    max_authors_threshold: 0
+    max_authors_threshold: 10
+    single_doi_exact_name_max_authors: 50
+    max_profiles_per_doi: 100
     num_jobs: 4
     component_batch_size: 100
     candidate_group_batch_size: 1000
@@ -79,9 +81,17 @@ workflow:
     verbose: 1
 ```
 
-`max_authors_threshold: 0` disables the DOI author limit. The supported ID
-tasks are `scienti`, `linkedin`, `orcid`, `publons`, `researchgate`, `scholar`,
-`scopus`, `ssrn`, and `wos`.
+For one shared DOI, `max_authors_threshold` is the maximum real number of work
+authors that allows a compatible abbreviated name to be high confidence.
+`single_doi_exact_name_max_authors` sets the corresponding limit for an exact
+normalized name. A missing work count is kept for review. DOI values are
+canonicalized before candidate grouping. `max_profiles_per_doi` is a separate
+technical guard against pathological candidate groups; `0` disables only that
+guard. The supported ID tasks are `scienti`, `linkedin`, `orcid`, `publons`,
+`researchgate`, `scholar`, `scopus`, `ssrn`, and `wos`.
+
+Different valid national IDs block a merge. Their existing source labels,
+including `Cédula de Ciudadanía`, are compared exactly and are never rewritten.
 
 `component_batch_size` limits how many disjoint graph components and snapshots
 are held in memory. `audit_batch_size` limits each MongoDB dry-run insert. The

@@ -125,7 +125,11 @@ def test_dry_run_preserves_person_documents_and_stores_one_plan():
     assert run["medium_confidence_plans"] == 0
     assert run["review_plans"] == 0
     assert run["rejected_orcid_conflicts"] == 0
+    assert run["rejected_national_id_conflicts"] == 0
     assert run["rejected_identity_conflicts"] == 0
     assert run["rejected_name_mismatches"] == 0
     assert run["rejected_given_name_conflicts"] == 0
     assert run["rejected_weak_bridges"] == 0
+    assert run["max_authors_threshold"] == 10
+    assert run["single_doi_exact_name_max_authors"] == 50
+    assert run["max_profiles_per_doi"] == 100

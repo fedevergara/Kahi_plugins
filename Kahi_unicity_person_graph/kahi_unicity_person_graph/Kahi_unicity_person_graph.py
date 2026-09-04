@@ -10,7 +10,13 @@ from urllib.parse import parse_qs, urlparse
 
 from joblib import Parallel, delayed
 from kahi.KahiBase import KahiBase
-from kahi_impactu_utils.Utils import compare_author, normalize_name, normalize_names, split_names
+from kahi_impactu_utils.Utils import (
+    compare_author,
+    doi_processor,
+    normalize_name,
+    normalize_names,
+    split_names,
+)
 from pymongo import MongoClient
 from pymongo.read_concern import ReadConcern
 from pymongo.write_concern import WriteConcern
@@ -36,6 +42,10 @@ ID_TASKS = {
     "wos",
 }
 TRUSTED_SOURCES = {"staff", "scienti", "minciencias", "scholar"}
+NATIONAL_ID_SOURCES = {
+    "Cédula de Ciudadanía",
+    "Cédula de Extranjería",
+}
 TARGET_PROVENANCE = {"staff": 0, "scienti": 1, "minciencias": 2}
 ANCHOR_SOURCE_PRIORITY = {
     "staff": 0,
@@ -112,6 +122,7 @@ class ComponentResult:
     plans: Tuple[MergePlan, ...]
     review_plans: Tuple[MergePlan, ...]
     rejected_orcid_conflicts: int
+    rejected_national_id_conflicts: int
     rejected_identity_conflicts: int
     rejected_name_mismatches: int
     rejected_given_name_conflicts: int
@@ -122,6 +133,7 @@ class ComponentResult:
 class EdgeDiscoveryResult:
     edges: Tuple[EvidenceEdge, ...]
     rejected_orcid_conflicts: int
+    rejected_national_id_conflicts: int
     rejected_identity_conflicts: int
     rejected_name_mismatches: int
     rejected_given_name_conflicts: int
@@ -138,9 +150,15 @@ class ComponentResolver:
         self,
         compare: Callable[[dict, dict, int], bool],
         timestamp: int,
+        max_authors_threshold: int = 10,
+        single_doi_exact_name_max_authors: int = 50,
     ):
         self.compare = compare
         self.timestamp = timestamp
+        self.max_authors_threshold = max_authors_threshold
+        self.single_doi_exact_name_max_authors = (
+            single_doi_exact_name_max_authors
+        )
 
     def resolve(
         self,
@@ -149,7 +167,11 @@ class ComponentResolver:
     ) -> ComponentResult:
         edges = component.edges
         if not edges and component.groups:
-            edges = CandidateEdgeBuilder(self.compare).add_groups(
+            edges = CandidateEdgeBuilder(
+                self.compare,
+                self.max_authors_threshold,
+                self.single_doi_exact_name_max_authors,
+            ).add_groups(
                 component.groups,
                 snapshot,
             ).finish().edges
@@ -159,6 +181,7 @@ class ComponentResolver:
                            for member_id in component.member_ids}
         cluster_edges = {member_id: [] for member_id in component.member_ids}
         rejected_orcid_conflicts = 0
+        rejected_national_id_conflicts = 0
         rejected_identity_conflicts = 0
         rejected_name_mismatches = 0
         rejected_given_name_conflicts = 0
@@ -201,6 +224,9 @@ class ComponentResolver:
             if identity_conflicts:
                 rejected_identity_conflicts += 1
                 rejected_orcid_conflicts += "orcid" in identity_conflicts
+                rejected_national_id_conflicts += (
+                    "national_id" in identity_conflicts
+                )
                 continue
             if self._member_sets_name_conflict(
                 left_members,
@@ -308,6 +334,7 @@ class ComponentResolver:
             plans=tuple(plans),
             review_plans=tuple(review_plans),
             rejected_orcid_conflicts=rejected_orcid_conflicts,
+            rejected_national_id_conflicts=rejected_national_id_conflicts,
             rejected_identity_conflicts=rejected_identity_conflicts,
             rejected_name_mismatches=rejected_name_mismatches,
             rejected_given_name_conflicts=rejected_given_name_conflicts,
@@ -384,11 +411,8 @@ class ComponentResolver:
         if source == "doi":
             if not isinstance(value, str):
                 return None
-            canonical = value.strip().lower()
-            canonical = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", canonical)
-            canonical = re.sub(r"^doi:\s*", "", canonical).rstrip("/")
-            return canonical if re.match(
-                r"^10\.\d{4,9}/\S+$", canonical) else None
+            canonical = doi_processor(value)
+            return canonical or None
         if not isinstance(value, str):
             return None
 
@@ -435,10 +459,29 @@ class ComponentResolver:
         return identifiers
 
     @classmethod
+    def _national_ids(cls, document: dict) -> set:
+        """Return comparable national IDs without changing their source field."""
+        identifiers = set()
+        for external_id in document.get("external_ids", []):
+            if not isinstance(external_id, dict):
+                continue
+            if external_id.get("source") not in NATIONAL_ID_SOURCES:
+                continue
+            value = external_id.get("id")
+            if not isinstance(value, (str, int)):
+                continue
+            digits = re.sub(r"\D", "", str(value))
+            if len(digits) < 5 or set(digits) == {"0"}:
+                continue
+            identifiers.add(digits.lstrip("0") or "0")
+        return identifiers
+
+    @classmethod
     def _authoritative_ids(cls, document: dict) -> Dict[str, set]:
         return {
             "orcid": cls._valid_orcid_ids(document),
             "scienti": cls._scienti_ids(document),
+            "national_id": cls._national_ids(document),
         }
 
     @classmethod
@@ -566,7 +609,11 @@ class ComponentResolver:
         right_members: set,
         snapshot: Dict[Any, dict],
     ) -> set:
-        identifiers = {"orcid": set(), "scienti": set()}
+        identifiers = {
+            "orcid": set(),
+            "scienti": set(),
+            "national_id": set(),
+        }
         for member_id in left_members | right_members:
             document_ids = cls._authoritative_ids(snapshot[member_id])
             for source, values in document_ids.items():
@@ -654,6 +701,8 @@ class ComponentResolver:
             ),
             "left_orcids": sorted(cls._valid_orcid_ids(left)),
             "right_orcids": sorted(cls._valid_orcid_ids(right)),
+            "left_national_ids": sorted(cls._national_ids(left)),
+            "right_national_ids": sorted(cls._national_ids(right)),
             "shared_external_ids": cls._shared_external_ids(left, right),
             "conflicting_external_ids": cls._conflicting_external_ids(left, right),
         }
@@ -752,10 +801,20 @@ class ComponentResolver:
 class CandidateEdgeBuilder:
     """Accumulate validated pair evidence before graph components are built."""
 
-    def __init__(self, compare: Callable[[dict, dict, int], bool]):
+    def __init__(
+        self,
+        compare: Callable[[dict, dict, int], bool],
+        max_authors_threshold: int = 10,
+        single_doi_exact_name_max_authors: int = 50,
+    ):
         self.compare = compare
+        self.max_authors_threshold = max_authors_threshold
+        self.single_doi_exact_name_max_authors = (
+            single_doi_exact_name_max_authors
+        )
         self.pair_details: Dict[Tuple[Any, Any], list] = {}
         self.rejected_orcid_conflicts = 0
+        self.rejected_national_id_conflicts = 0
         self.rejected_identity_conflicts = 0
         self.rejected_name_mismatches = 0
         self.rejected_given_name_conflicts = 0
@@ -784,8 +843,13 @@ class CandidateEdgeBuilder:
                 canonical_key,
                 group.member_ids,
                 group.order,
+                group.work_author_count,
             )
-            author_count = len(group.member_ids)
+            author_count = (
+                group.work_author_count
+                if group.source == "doi" and group.work_author_count is not None
+                else len(group.member_ids)
+            )
             for left_id, right_id in combinations(group.member_ids, 2):
                 left = snapshot.get(left_id)
                 right = snapshot.get(right_id)
@@ -802,6 +866,9 @@ class CandidateEdgeBuilder:
                 if identity_conflicts:
                     self.rejected_identity_conflicts += 1
                     self.rejected_orcid_conflicts += "orcid" in identity_conflicts
+                    self.rejected_national_id_conflicts += (
+                        "national_id" in identity_conflicts
+                    )
                     continue
                 compare_match = bool(self.compare(left, right, author_count))
                 left_name_features = name_features[left_id]
@@ -833,6 +900,7 @@ class CandidateEdgeBuilder:
                 )
                 detail["compare_author"] = compare_match
                 detail["alias_name_match"] = alias_match
+                detail["work_author_count"] = group.work_author_count
                 details = self.pair_details.setdefault(pair, [])
                 marker = (detail["source"], repr(detail["key"]))
                 if not any(
@@ -842,9 +910,8 @@ class CandidateEdgeBuilder:
                     details.append(detail)
         return self
 
-    @staticmethod
     def _edge_confidence(
-            details: Sequence[dict]) -> Tuple[str, int, List[str]]:
+            self, details: Sequence[dict]) -> Tuple[str, int, List[str]]:
         identifier_sources = {
             detail["source"]
             for detail in details
@@ -864,6 +931,17 @@ class CandidateEdgeBuilder:
             detail.get("alias_name_match") and not detail.get("compare_author")
             for detail in details
         )
+        work_author_counts = {
+            detail.get("work_author_count")
+            for detail in details
+            if detail["source"] == "doi"
+            and isinstance(detail.get("work_author_count"), int)
+        }
+        single_doi_author_count = (
+            next(iter(work_author_counts))
+            if len(doi_keys) == 1 and len(work_author_counts) == 1
+            else None
+        )
         if alias_only_match:
             shared_name_token_count = max(
                 (
@@ -872,7 +950,12 @@ class CandidateEdgeBuilder:
                 ),
                 default=0,
             )
-            if doi_keys and shared_name_token_count >= 3:
+            if (
+                len(doi_keys) == 1
+                and single_doi_author_count is not None
+                and single_doi_author_count <= self.max_authors_threshold
+                and shared_name_token_count >= 3
+            ):
                 return "high", 80, ["three_shared_name_tokens", "shared_doi"]
             longest_shared_variant = max(
                 (
@@ -892,15 +975,21 @@ class CandidateEdgeBuilder:
             detail["shared_affiliation"] for detail in details)
         if len(doi_keys) >= 2:
             return "high", 90, ["multiple_shared_dois"]
-        if doi_keys and exact_name:
+        if (
+            doi_keys
+            and exact_name
+            and single_doi_author_count is not None
+            and single_doi_author_count
+            <= self.single_doi_exact_name_max_authors
+        ):
             return "high", 85, ["exact_normalized_name", "shared_doi"]
-        strong_name_variant = any(
-            detail.get("shared_name_variants")
-            or detail.get("shared_name_token_count", 0) >= 2
-            for detail in details
-        )
-        if doi_keys and strong_name_variant:
-            return "high", 75, ["strong_name_variant", "shared_doi"]
+        if (
+            doi_keys
+            and single_doi_author_count is not None
+            and single_doi_author_count <= self.max_authors_threshold
+            and any(detail.get("compare_author") for detail in details)
+        ):
+            return "high", 75, ["small_work_compatible_name", "shared_doi"]
         reasons = ["compatible_name"]
         if doi_keys:
             reasons.append("shared_doi")
@@ -945,6 +1034,9 @@ class CandidateEdgeBuilder:
         return EdgeDiscoveryResult(
             edges=tuple(edges),
             rejected_orcid_conflicts=self.rejected_orcid_conflicts,
+            rejected_national_id_conflicts=(
+                self.rejected_national_id_conflicts
+            ),
             rejected_identity_conflicts=self.rejected_identity_conflicts,
             rejected_name_mismatches=self.rejected_name_mismatches,
             rejected_given_name_conflicts=self.rejected_given_name_conflicts,
@@ -1000,9 +1092,21 @@ class Kahi_unicity_person_graph(KahiBase):
 
         self.n_jobs = max(1, int(plugin_config.get("num_jobs", 1)))
         self.verbose = int(plugin_config.get("verbose", 0))
-        self.authors_threshold = int(
-            plugin_config.get(
-                "max_authors_threshold", 0))
+        self.max_authors_threshold = max(
+            1, int(plugin_config.get("max_authors_threshold", 10))
+        )
+        self.single_doi_exact_name_max_authors = max(
+            self.max_authors_threshold,
+            int(
+                plugin_config.get(
+                    "single_doi_exact_name_max_authors",
+                    50,
+                )
+            ),
+        )
+        self.max_profiles_per_doi = max(
+            0, int(plugin_config.get("max_profiles_per_doi", 100))
+        )
         self.dry_run = bool(plugin_config.get("dry_run", True))
         self.snapshot_batch_size = max(
             1, int(plugin_config.get("snapshot_batch_size", 5000))
@@ -1021,6 +1125,83 @@ class Kahi_unicity_person_graph(KahiBase):
         self.collection.create_index("external_ids.id")
         self.collection.create_index("related_works.id")
         self.sets_collection.create_index([("run_id", 1), ("component_id", 1)])
+
+    @staticmethod
+    def _mongo_canonical_doi_expression(field: str) -> dict:
+        """Build the Mongo expression equivalent to the DOI canonicalizer."""
+        return {
+            "$let": {
+                "vars": {
+                    "candidate": {
+                        "$replaceAll": {
+                            "input": {
+                                "$replaceAll": {
+                                    "input": {
+                                        "$toLower": {
+                                            "$trim": {"input": field}
+                                        }
+                                    },
+                                    "find": "%2f",
+                                    "replacement": "/",
+                                }
+                            },
+                            "find": " ",
+                            "replacement": "",
+                        }
+                    }
+                },
+                "in": {
+                    "$let": {
+                        "vars": {
+                            "found": {
+                                "$regexFind": {
+                                    "input": "$$candidate",
+                                    "regex": r"10\.[0-9]{3,}/[^\s]+",
+                                }
+                            }
+                        },
+                        "in": {
+                            "$cond": [
+                                {"$ne": ["$$found", None]},
+                                {
+                                    "$concat": [
+                                        "https://doi.org/",
+                                        {
+                                            "$rtrim": {
+                                                "input": "$$found.match",
+                                                "chars": ".",
+                                            }
+                                        },
+                                    ]
+                                },
+                                None,
+                            ]
+                        },
+                    }
+                },
+            }
+        }
+
+    @staticmethod
+    def _effective_author_count_expression() -> dict:
+        return {
+            "$cond": [
+                {
+                    "$and": [
+                        {"$isNumber": "$author_count"},
+                        {"$gt": ["$author_count", 0]},
+                    ]
+                },
+                {"$toInt": "$author_count"},
+                {
+                    "$cond": [
+                        {"$isArray": "$authors"},
+                        {"$size": "$authors"},
+                        None,
+                    ]
+                },
+            ]
+        }
 
     def discover_candidate_groups(self) -> List[CandidateGroup]:
         groups = []
@@ -1056,26 +1237,64 @@ class Kahi_unicity_person_graph(KahiBase):
 
         if "doi" in self.tasks:
             size_conditions = [{"$gt": [{"$size": "$member_ids"}, 1]}]
-            if self.authors_threshold > 0:
+            if self.max_profiles_per_doi > 0:
                 size_conditions.append(
                     {
                         "$lte": [
                             {"$size": "$member_ids"},
-                            self.authors_threshold,
+                            self.max_profiles_per_doi,
                         ]
                     }
                 )
             pipeline = [
                 {"$match": {"related_works.source": "doi"}},
                 {"$unwind": "$related_works"},
-                {"$match": {"related_works.source": "doi"}},
+                {
+                    "$match": {
+                        "related_works.source": "doi",
+                        "related_works.id": {"$type": "string"},
+                    }
+                },
+                {
+                    "$set": {
+                        "canonical_doi": self._mongo_canonical_doi_expression(
+                            "$related_works.id"
+                        )
+                    }
+                },
+                {"$match": {"canonical_doi": {"$ne": None}}},
                 {
                     "$group": {
-                        "_id": "$related_works.id",
+                        "_id": "$canonical_doi",
                         "member_ids": {"$addToSet": "$_id"},
                     }
                 },
                 {"$match": {"$expr": {"$and": size_conditions}}},
+                {
+                    "$lookup": {
+                        "from": "works",
+                        "localField": "_id",
+                        "foreignField": "external_ids.id",
+                        "pipeline": [
+                            {
+                                "$project": {
+                                    "_id": 0,
+                                    "count": (
+                                        self._effective_author_count_expression()
+                                    ),
+                                }
+                            }
+                        ],
+                        "as": "matched_works",
+                    }
+                },
+                {
+                    "$set": {
+                        "work_author_count": {
+                            "$max": "$matched_works.count"
+                        }
+                    }
+                },
                 {"$sort": {"_id": 1}},
             ]
             for record in self.collection.aggregate(
@@ -1089,7 +1308,10 @@ class Kahi_unicity_person_graph(KahiBase):
                         "doi",
                         record["_id"],
                         member_ids,
-                        order))
+                        order,
+                        record.get("work_author_count"),
+                    )
+                )
                 order += 1
 
         return groups
@@ -1098,7 +1320,11 @@ class Kahi_unicity_person_graph(KahiBase):
         self,
         groups: Sequence[CandidateGroup],
     ) -> EdgeDiscoveryResult:
-        builder = CandidateEdgeBuilder(self.compare)
+        builder = CandidateEdgeBuilder(
+            self.compare,
+            self.max_authors_threshold,
+            self.single_doi_exact_name_max_authors,
+        )
         projection = {
             "full_name": 1,
             "first_names": 1,
@@ -1138,6 +1364,11 @@ class Kahi_unicity_person_graph(KahiBase):
                 "component_batch_size": self.component_batch_size,
                 "audit_batch_size": self.audit_batch_size,
                 "candidate_group_batch_size": self.candidate_group_batch_size,
+                "max_authors_threshold": self.max_authors_threshold,
+                "single_doi_exact_name_max_authors": (
+                    self.single_doi_exact_name_max_authors
+                ),
+                "max_profiles_per_doi": self.max_profiles_per_doi,
             }
         )
 
@@ -1146,7 +1377,12 @@ class Kahi_unicity_person_graph(KahiBase):
             edge_discovery = self.discover_candidate_edges(groups)
             components = build_evidence_components(edge_discovery.edges)
             self._validate_disjoint_components(components)
-            resolver = ComponentResolver(self.compare, timestamp)
+            resolver = ComponentResolver(
+                self.compare,
+                timestamp,
+                self.max_authors_threshold,
+                self.single_doi_exact_name_max_authors,
+            )
             if not self.dry_run:
                 self._require_transaction_support()
 
@@ -1157,6 +1393,9 @@ class Kahi_unicity_person_graph(KahiBase):
             medium_confidence_plans = 0
             high_confidence_absorbed_documents = 0
             rejected_orcid_conflicts = edge_discovery.rejected_orcid_conflicts
+            rejected_national_id_conflicts = (
+                edge_discovery.rejected_national_id_conflicts
+            )
             rejected_identity_conflicts = edge_discovery.rejected_identity_conflicts
             rejected_name_mismatches = edge_discovery.rejected_name_mismatches
             rejected_given_name_conflicts = (
@@ -1218,6 +1457,10 @@ class Kahi_unicity_person_graph(KahiBase):
                 rejected_orcid_conflicts += sum(
                     result.rejected_orcid_conflicts for result in results
                 )
+                rejected_national_id_conflicts += sum(
+                    result.rejected_national_id_conflicts
+                    for result in results
+                )
                 rejected_identity_conflicts += sum(
                     result.rejected_identity_conflicts for result in results
                 )
@@ -1248,6 +1491,9 @@ class Kahi_unicity_person_graph(KahiBase):
                                 high_confidence_absorbed_documents
                             ),
                             "rejected_orcid_conflicts": rejected_orcid_conflicts,
+                            "rejected_national_id_conflicts": (
+                                rejected_national_id_conflicts
+                            ),
                             "rejected_identity_conflicts": (
                                 rejected_identity_conflicts
                             ),
@@ -1285,6 +1531,9 @@ class Kahi_unicity_person_graph(KahiBase):
                             high_confidence_absorbed_documents
                         ),
                         "rejected_orcid_conflicts": rejected_orcid_conflicts,
+                        "rejected_national_id_conflicts": (
+                            rejected_national_id_conflicts
+                        ),
                         "rejected_identity_conflicts": rejected_identity_conflicts,
                         "rejected_name_mismatches": rejected_name_mismatches,
                         "rejected_given_name_conflicts": (
